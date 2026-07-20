@@ -214,9 +214,9 @@ func testSessionEvents(ctx context.Context, c *oc.Client, sid string, report fun
 	subCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	events, errc := c.SessionEvents(subCtx, sid, &oc.SessionEventsOpt{
-		After:       0, // 从头开始
-		BackoffMin:  200 * time.Millisecond,
-		BackoffMax:  2 * time.Second,
+		After:      0, // 从头开始
+		BackoffMin: 200 * time.Millisecond,
+		BackoffMax: 2 * time.Second,
 	})
 
 	var seen []string
