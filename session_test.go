@@ -162,3 +162,47 @@ func TestListMessages_unmarshal(t *testing.T) {
 	}
 	_ = io.Discard
 }
+
+func TestHealth_healthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/health" || r.Method != "GET" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"healthy":true}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	if err := c.Health(context.Background()); err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+}
+
+func TestHealth_unhealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"healthy":false}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	if err := c.Health(context.Background()); err == nil {
+		t.Fatal("expected error for unhealthy")
+	}
+}
+
+func TestHealth_serverError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	err := c.Health(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 500")
+	}
+	ae, ok := err.(*APIError)
+	if !ok || ae.Status != 500 {
+		t.Fatalf("err = %+v (%T)", err, err)
+	}
+}

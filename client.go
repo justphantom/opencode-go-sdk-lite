@@ -112,6 +112,21 @@ func (c *Client) doEmpty(ctx context.Context, method, path string, query url.Val
 	return nil
 }
 
+// Health 检查服务端是否可用。GET /api/health，解析 {healthy:true}，
+// 响应非 2xx 或 healthy != true 都视为不健康。
+func (c *Client) Health(ctx context.Context) error {
+	var body struct {
+		Healthy bool `json:"healthy"`
+	}
+	if err := c.doJSON(ctx, http_GET, "/api/health", nil, nil, &body, 0); err != nil {
+		return err
+	}
+	if !body.Healthy {
+		return fmt.Errorf("opencode: health check reports unhealthy")
+	}
+	return nil
+}
+
 func (c *Client) newRequest(ctx context.Context, method, path string, query url.Values, body io.Reader) (*http.Request, error) {
 	rel, err := url.Parse(path)
 	if err != nil {
