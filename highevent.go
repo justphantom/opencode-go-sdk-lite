@@ -135,13 +135,14 @@ func mapToHighEvent(ev Event, assistantID *string) (HighEvent, bool, bool) {
 			return HighEvent{}, false, false
 		}
 		trackAssistantID(assistantID, d.AssistantMessageID)
-		// finish="stop" 是成功终止；其他 finish 值（如 length/tooluns）按 step_finish 报告
+		// finish="stop" 是成功终止；其他 finish 值（如 length/tooluns）按 step_finish 报告。
+		// result 字段在此留空：终止事件本身不携带 assistant 输出文本，
+		// 由 pump 在关闭 chan 前回填累积的 text delta（见 Client.pump）。
 		if d.Finish == "stop" || d.Finish == "" {
 			return HighEvent{
 				kind:         HighEventResult,
 				sessionID:    d.SessionID,
 				messageID:    d.AssistantMessageID,
-				result:       d.Finish,
 				inputTokens:  int(d.Tokens.Input),
 				outputTokens: int(d.Tokens.Output),
 				cacheRead:    int(d.Tokens.Cache.Read),

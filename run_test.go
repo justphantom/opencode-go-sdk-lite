@@ -247,3 +247,43 @@ func TestRun_AbortCancelsStream(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestRun_ResultCarriesAccumulatedText：HighEventResult.Result() 必须是
+// 累积的 assistant text delta（助手回复本体），而不是 step.ended 事件
+// 里的 finish 字段（"stop" 等终止原因）。回归：旧版把 finish 塞进
+// result，消费方拿到 "stop" 当作最终回复。
+func TestRun_ResultCarriesAccumulatedText(t *testing.T) {
+	srv, _ := setupRunServer(t, "ses_run5", "msg_user5", frames_textOnly)
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx)
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var result HighEvent
+	timeout := time.After(3 * time.Second)
+	for ev := range out {
+		if ev.Kind() == HighEventResult {
+			result = ev
+			break
+		}
+		select {
+		case <-timeout:
+			t.Fatal("timeout waiting for result")
+		default:
+		}
+	}
+	if result.Kind() != HighEventResult {
+		t.Fatal("no HighEventResult received")
+	}
+	if got := result.Result(); got != "OK" {
+		t.Errorf("Result() = %q, want accumulated text %q (not finish reason)", got, "OK")
+	}
+}

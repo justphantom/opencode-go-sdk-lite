@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -82,6 +83,7 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 	}
 
 	var assistantID string
+	var accText strings.Builder
 	probe := time.NewTimer(runProbeTimeout)
 	defer probe.Stop()
 
@@ -124,6 +126,17 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 				}
 			}
 			probe.Reset(runProbeTimeout)
+
+			// 累积 assistant 输出文本，供终止事件回填 result。
+			if he.Kind() == HighEventText {
+				accText.WriteString(he.Text())
+			}
+			// HighEventResult 的 result 字段由 mapToHighEvent 留空（finish 不是
+			// 输出文本），此处用累积的 text delta 填充，让消费方拿到的
+			// Result() 是助手回复本体而非 "stop" 这类终止原因。
+			if he.Kind() == HighEventResult && he.result == "" {
+				he.result = accText.String()
+			}
 
 			select {
 			case <-ctx.Done():
