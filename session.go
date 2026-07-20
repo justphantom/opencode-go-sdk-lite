@@ -133,8 +133,13 @@ func (c *Client) SwitchAgent(ctx context.Context, sessionID, agent string) error
 }
 
 // SwitchModel 切换后续 provider turn 的 model。
+// 服务端期望 body 为 {"model": ModelRef}（实测：直接 POST ModelRef
+// 会返 400 "Missing key at [\"model\"]"，见 session_test.go）。
 func (c *Client) SwitchModel(ctx context.Context, sessionID string, m ModelRef) error {
-	return c.doEmpty(ctx, http_POST, "/api/session/"+sessionID+"/model", nil, m, 204)
+	body := struct {
+		Model ModelRef `json:"model"`
+	}{Model: m}
+	return c.doEmpty(ctx, http_POST, "/api/session/"+sessionID+"/model", nil, body, 204)
 }
 
 // ListMessagesOpt 是 GET /api/session/{id}/message 的查询参数。
