@@ -1,0 +1,249 @@
+package opencode
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+// setupRunServer 构造一个 mock 服务：
+//   - POST /api/session 返回固定 sessionID
+//   - POST /api/session/{id}/prompt 返回 admitted
+//   - POST /api/session/{id}/interrupt 返回 204
+//   - GET /api/event 推送 framesFunc 指定的事件帧序列后保持连接
+//
+// framesFunc(sessionID, userMsgID) 返回要推送的字节流。
+func setupRunServer(t *testing.T, sessionID, userMsgID string, framesFunc func(sid, umid string) string) (*httptest.Server, *bool) {
+	t.Helper()
+	interrupted := false
+	promptCh := make(chan struct{}, 8) // 等 prompt 到达后再发 frames，模拟真实服务端时序
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/session" && r.Method == "POST":
+			_, _ = w.Write([]byte(`{"data":{"id":"` + sessionID + `","projectID":"global","agent":"build","model":{"id":"m","providerID":"p"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1},"title":"t","location":{"directory":"/tmp"}}}`))
+		case strings.HasPrefix(r.URL.Path, "/api/session/") && strings.HasSuffix(r.URL.Path, "/prompt"):
+			_, _ = w.Write([]byte(`{"data":{"admittedSeq":1,"id":"` + userMsgID + `","sessionID":"` + sessionID + `","prompt":{"text":"hi"},"delivery":"steer","timeCreated":1}}`))
+			promptCh <- struct{}{}
+		case strings.HasPrefix(r.URL.Path, "/api/session/") && strings.HasSuffix(r.URL.Path, "/interrupt"):
+			interrupted = true
+			w.WriteHeader(204)
+		case r.URL.Path == "/api/event":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			fl := w.(http.Flusher)
+			// 等 prompt 到达（订阅已就绪）再发 frames
+			select {
+			case <-promptCh:
+			case <-r.Context().Done():
+				return
+			}
+			// 给 Run 主循环时间执行 Subscribe
+			time.Sleep(50 * time.Millisecond)
+			_, _ = w.Write([]byte(framesFunc(sessionID, userMsgID)))
+			fl.Flush()
+			<-r.Context().Done()
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	return srv, &interrupted
+}
+
+const assistantMsgID = "msg_assistant_001"
+
+// frames_textOnly: reasoning + text + step.ended(finish=stop)
+func frames_textOnly(sid, umid string) string {
+	var b strings.Builder
+	b.WriteString(sseTextDelta(sid, assistantMsgID, "OK", 0)) // 无 durable
+	b.WriteString(sseStepEnded(sid, assistantMsgID, 5))
+	return b.String()
+}
+
+func TestRun_TextOnlyTurn(t *testing.T) {
+	srv, _ := setupRunServer(t, "ses_run1", "msg_user1", frames_textOnly)
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx)
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var got []HighEventKind
+	timeout := time.After(3 * time.Second)
+	for ev := range out {
+		got = append(got, ev.Kind())
+		if ev.Kind() == HighEventResult || ev.Kind() == HighEventError {
+			break
+		}
+		select {
+		case <-timeout:
+			t.Fatalf("timeout")
+		default:
+		}
+	}
+	// 首事件必须是 Prompt
+	if len(got) == 0 || got[0] != HighEventPrompt {
+		t.Fatalf("first event = %v, want prompt", got)
+	}
+	// 必含终止 result
+	found := false
+	for _, k := range got {
+		if k == HighEventResult {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no HighEventResult in %v", got)
+	}
+}
+
+func TestRun_PromptFirstEvent(t *testing.T) {
+	srv, _ := setupRunServer(t, "ses_run2", "msg_user2", frames_textOnly)
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx)
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	select {
+	case ev := <-out:
+		if ev.Kind() != HighEventPrompt {
+			t.Fatalf("first kind = %v", ev.Kind())
+		}
+		if ev.MessageID() != "msg_user2" {
+			t.Errorf("user messageID = %q", ev.MessageID())
+		}
+		if ev.SessionID() != "ses_run2" {
+			t.Errorf("sessionID = %q", ev.SessionID())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no first event")
+	}
+}
+
+// frames_otherAssistant: 先 step.started 锁定 assistantID，
+// 再混入另一个 assistantID 的 text.delta（应被过滤），最后正确帧
+func frames_otherAssistant(sid, umid string) string {
+	var b strings.Builder
+	b.WriteString(sseStepStarted(sid, assistantMsgID, 1))
+	// 另一个 assistantID 的帧（应被过滤）
+	b.WriteString(sseTextDelta(sid, "msg_OTHER", "noise", 0))
+	// 正确 assistantID 的帧
+	b.WriteString(sseTextDelta(sid, assistantMsgID, "real", 0))
+	b.WriteString(sseStepEnded(sid, assistantMsgID, 5))
+	return b.String()
+}
+
+func sseStepStarted(sid, mid string, seq int64) string {
+	return fmt.Sprintf(
+		`data: {"id":"evt_%d","type":"session.next.step.started","durable":{"aggregateID":"%s","seq":%d,"version":1},"data":{"timestamp":1,"sessionID":"%s","assistantMessageID":"%s","agent":"build","model":{"id":"m","providerID":"p"}}}`+"\n\n",
+		seq, sid, seq, sid, mid,
+	)
+}
+
+func TestRun_MessageIDFiltering(t *testing.T) {
+	srv, _ := setupRunServer(t, "ses_run3", "msg_user3", frames_otherAssistant)
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx)
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var texts []string
+	timeout := time.After(3 * time.Second)
+	for ev := range out {
+		if ev.Kind() == HighEventText {
+			texts = append(texts, ev.Text())
+		}
+		if ev.Kind() == HighEventResult {
+			break
+		}
+		select {
+		case <-timeout:
+			t.Fatalf("timeout")
+		default:
+		}
+	}
+	// 应只看到 "real"，不含 "noise"
+	for _, tx := range texts {
+		if tx == "noise" {
+			t.Errorf("filtered event leaked through: %v", texts)
+		}
+	}
+	found := false
+	for _, tx := range texts {
+		if tx == "real" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'real' in %v", texts)
+	}
+}
+
+func TestRun_AbortCancelsStream(t *testing.T) {
+	// stallFrames：只发 text.delta，不发终止，让 pump 必须靠 ctx 取消退出
+	stallFrames := func(sid, umid string) string {
+		return sseTextDelta(sid, assistantMsgID, "partial...", 0)
+	}
+	srv, interrupted := setupRunServer(t, "ses_run4", "msg_user4", stallFrames)
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx)
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// 收到首事件后立即取消
+	<-out
+	cancel()
+
+	// 等待 chan 关闭
+	timeout := time.After(2 * time.Second)
+	for range out {
+		select {
+		case <-timeout:
+			t.Fatal("chan not closed after cancel")
+		default:
+		}
+	}
+
+	// 应触发 interrupt
+	deadline := time.After(500 * time.Millisecond)
+	for !*interrupted {
+		select {
+		case <-deadline:
+			t.Fatal("interrupt not called")
+		default:
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
