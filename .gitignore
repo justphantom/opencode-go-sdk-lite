@@ -34,3 +34,4 @@ go.work.sum
 
 # ZCode client metadata
 .zcode/
+/docs/
