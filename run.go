@@ -8,11 +8,11 @@ import (
 
 // RunOptions 是 Run 的高层参数。SessionID 空则内部 CreateSession。
 type RunOptions struct {
-	Prompt   string
+	Prompt    string
 	SessionID string
-	Model    *ModelRef
-	Agent    string
-	Location *LocationRef // directory 在此
+	Model     *ModelRef
+	Agent     string
+	Location  *LocationRef // directory 在此
 }
 
 const (

@@ -15,10 +15,10 @@ import (
 // 移植自 lark-bridge/internal/opencodeserve/id.go（已验证）。
 
 const (
-	msgPrefix    = "msg"
-	msgRandLen   = 14
-	msgTimeShift = 12 // 0x1000
-	msgTsMask36  = (uint64(1) << 36) - 1
+	msgPrefix      = "msg"
+	msgRandLen     = 14
+	msgTimeShift   = 12 // 0x1000
+	msgTsMask36    = (uint64(1) << 36) - 1
 	base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
 

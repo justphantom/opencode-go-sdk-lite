@@ -50,13 +50,13 @@ const (
 // 调用方应在第一次 Prompt 前调用，避免丢首帧。Close 即停止后台。
 func (c *Client) NewGlobalEventStream(ctx context.Context) (*GlobalEventStream, error) {
 	s := &GlobalEventStream{
-		c:              c,
-		http:           c.httpClient,
-		subs:           make(map[string]chan Event),
-		stopCh:         make(chan struct{}),
-		done:           make(chan struct{}),
-		heartbeatDone:  make(chan struct{}),
-		lastHeartbeat:  time.Now(),
+		c:             c,
+		http:          c.httpClient,
+		subs:          make(map[string]chan Event),
+		stopCh:        make(chan struct{}),
+		done:          make(chan struct{}),
+		heartbeatDone: make(chan struct{}),
+		lastHeartbeat: time.Now(),
 	}
 	go s.run(ctx)
 	go s.heartbeatWatchdog()

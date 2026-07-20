@@ -110,7 +110,7 @@ func (c *Client) Interrupt(ctx context.Context, sessionID string) error {
 }
 
 // DeleteSession 删除会话。v2 spec 未提供删除端点，实际由 v1 端点 DELETE /session/{id} 承担
-//（实测：返 200 + body true，删后 GET /api/session/{id} 返 404）。这是 v2 与 v1 共存的官方行为。
+// （实测：返 200 + body true，删后 GET /api/session/{id} 返 404）。这是 v2 与 v1 共存的官方行为。
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	var ok bool
 	if err := c.doJSON(ctx, http_DELETE, "/session/"+sessionID, nil, nil, &ok, 0); err != nil {
