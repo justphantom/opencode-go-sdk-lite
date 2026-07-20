@@ -21,21 +21,22 @@ func TestLocationQuery(t *testing.T) {
 }
 
 // providersFixture 是 GET /provider 的标准响应：两个 provider，三个模型。
+// capabilities 结构对齐服务端实测（input/output 为模态对象，toolcall 键）。
 const providersFixture = `{"all":[
 	{"id":"anthropic","name":"Anthropic","source":"api","models":{
 		"claude-sonnet":{"id":"claude-sonnet","providerID":"anthropic","name":"Sonnet",
 			"api":{"id":"x","url":"u","npm":"n"},
-			"capabilities":{"tools":true,"input":["text"],"output":["text"]},
+			"capabilities":{"toolcall":true,"reasoning":true,"input":{"text":true,"image":true},"output":{"text":true}},
 			"cost":{"input":3,"output":15,"cache":{"read":0.3,"write":3.75}},
 			"limit":{"context":200000,"output":8192},"status":"active"},
 		"claude-old":{"id":"claude-old","providerID":"anthropic","name":"Old",
-			"api":{"id":"y","url":"u","npm":"n"},"capabilities":{"tools":false},
+			"api":{"id":"y","url":"u","npm":"n"},"capabilities":{"toolcall":false},
 			"cost":{"input":1,"output":2,"cache":{"read":0,"write":0}},
 			"limit":{"context":100000,"output":4096},"status":"deprecated"}
 	}},
 	{"id":"opencode","name":"O","source":"api","models":{
 		"free":{"id":"free","providerID":"opencode","name":"F",
-			"api":{"id":"z","url":"u","npm":"n"},"capabilities":{"tools":true},
+			"api":{"id":"z","url":"u","npm":"n"},"capabilities":{"toolcall":true},
 			"cost":{"input":0,"output":0,"cache":{"read":0,"write":0}},
 			"limit":{"context":32000,"output":4096},"status":"active"}
 	}}
@@ -69,8 +70,11 @@ func TestListModels(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing anthropic/claude-sonnet in %v", byID)
 	}
-	if !sonnet.Enabled || !sonnet.Capabilities.Tools || sonnet.Limit.Context != 200000 {
+	if !sonnet.Enabled || !sonnet.Capabilities.Toolcall || sonnet.Limit.Context != 200000 {
 		t.Errorf("sonnet = %+v", sonnet)
+	}
+	if !sonnet.Capabilities.Input["text"] || !sonnet.Capabilities.Input["image"] {
+		t.Errorf("input caps = %v", sonnet.Capabilities.Input)
 	}
 	if old := byID["anthropic/claude-old"]; old.Enabled || old.Status != "deprecated" {
 		t.Errorf("old = %+v", old)

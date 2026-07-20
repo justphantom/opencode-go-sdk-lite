@@ -11,22 +11,19 @@ import (
 	"time"
 )
 
-// sseTextDelta 构造一个 session.next.text.delta 帧。
+// sseTextDelta 构造一个 message.part.delta 帧（V1 实测格式）。
 func sseTextDelta(sid, mid, delta string, seq int64) string {
-	durable := ""
-	if seq > 0 {
-		durable = fmt.Sprintf(`,"durable":{"aggregateID":"%s","seq":%d,"version":1}`, sid, seq)
-	}
 	return fmt.Sprintf(
-		`data: {"id":"evt_%d","type":"session.next.text.delta"%s,"data":{"sessionID":"%s","assistantMessageID":"%s","textID":"t1","delta":%q}}`+"\n\n",
-		seq, durable, sid, mid, delta,
+		`data: {"id":"evt_%d","type":"message.part.delta","properties":{"sessionID":"%s","messageID":"%s","partID":"prt_t1","field":"text","delta":%q}}`+"\n\n",
+		seq, sid, mid, delta,
 	)
 }
 
+// sseStepEnded 构造一个 step-finish(reason=stop) 的 message.part.updated 帧。
 func sseStepEnded(sid, mid string, seq int64) string {
 	return fmt.Sprintf(
-		`data: {"id":"evt_%d","type":"session.next.step.ended","durable":{"aggregateID":"%s","seq":%d,"version":2},"data":{"sessionID":"%s","assistantMessageID":"%s","finish":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}`+"\n\n",
-		seq, sid, seq, sid, mid,
+		`data: {"id":"evt_%d","type":"message.part.updated","properties":{"sessionID":"%s","part":{"id":"prt_f1","reason":"stop","messageID":"%s","sessionID":"%s","type":"step-finish","tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0},"time":1}}`+"\n\n",
+		seq, sid, mid, sid,
 	)
 }
 
@@ -52,7 +49,7 @@ func TestGlobalStream_RoutesBySessionID(t *testing.T) {
 	c, _ := New(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s, err := c.NewGlobalEventStream(ctx)
+	s, err := c.NewGlobalEventStream(ctx, nil)
 	if err != nil {
 		t.Fatalf("NewGlobalEventStream: %v", err)
 	}
@@ -74,10 +71,10 @@ func TestGlobalStream_RoutesBySessionID(t *testing.T) {
 		}
 	}
 
-	if gotA[0] != "session.next.text.delta" || gotA[1] != "session.next.step.ended" {
+	if gotA[0] != "message.part.delta" || gotA[1] != "message.part.updated" {
 		t.Errorf("gotA = %v", gotA)
 	}
-	if gotB[0] != "session.next.text.delta" || gotB[1] != "session.next.step.ended" {
+	if gotB[0] != "message.part.delta" || gotB[1] != "message.part.updated" {
 		t.Errorf("gotB = %v", gotB)
 	}
 }
@@ -94,7 +91,7 @@ func TestGlobalStream_UnsubscribeClosesChan(t *testing.T) {
 	c, _ := New(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s, _ := c.NewGlobalEventStream(ctx)
+	s, _ := c.NewGlobalEventStream(ctx, nil)
 	defer func() { _ = s.Close() }()
 
 	ch := s.Subscribe("ses_x")
@@ -123,7 +120,7 @@ func TestGlobalStream_HeartbeatForcesReconnect(t *testing.T) {
 	c, _ := New(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s, _ := c.NewGlobalEventStream(ctx)
+	s, _ := c.NewGlobalEventStream(ctx, nil)
 	defer func() { _ = s.Close() }()
 
 	// hook cancelConn 计数（通过观察连接被中断——服务端 ctx done 即代表被 cancel）
@@ -167,7 +164,7 @@ func TestGlobalStream_ReconnectAfterDrop(t *testing.T) {
 	c, _ := New(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s, _ := c.NewGlobalEventStream(ctx)
+	s, _ := c.NewGlobalEventStream(ctx, nil)
 	defer func() { _ = s.Close() }()
 
 	ch := s.Subscribe("ses_r")
@@ -177,8 +174,8 @@ func TestGlobalStream_ReconnectAfterDrop(t *testing.T) {
 	for len(got) < 2 {
 		select {
 		case ev := <-ch:
-			var td TextDeltaData
-			_ = json.Unmarshal(ev.Data, &td)
+			var td PartDeltaData
+			_ = json.Unmarshal(ev.Properties, &td)
 			got = append(got, td.Delta)
 		case <-timeout:
 			t.Fatalf("timeout: got=%v", got)

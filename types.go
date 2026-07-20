@@ -180,11 +180,15 @@ type ModelAPI struct {
 	NPM string `json:"npm"`
 }
 
-// ModelCapabilities 按 V1 schema：tools 布尔 + input/output 数组。
+// ModelCapabilities 按服务端实测结构（与 spec 声明不同）：
+// input/output 是模态→布尔的对象，工具能力键为 toolcall。
 type ModelCapabilities struct {
-	Tools  bool     `json:"tools"`
-	Input  []string `json:"input,omitempty"`
-	Output []string `json:"output,omitempty"`
+	Temperature bool            `json:"temperature,omitempty"`
+	Reasoning   bool            `json:"reasoning,omitempty"`
+	Attachment  bool            `json:"attachment,omitempty"`
+	Toolcall    bool            `json:"toolcall"`
+	Input       map[string]bool `json:"input,omitempty"`
+	Output      map[string]bool `json:"output,omitempty"`
 }
 
 type ModelCost struct {
@@ -313,143 +317,118 @@ const (
 
 // ============ Event ============
 
-// Event 是 SSE 推送的一条事件；Data 保留为原始 JSON，由调用方按 Type 反序列化。
+// Event 是 SSE 推送的一条事件。实测 envelope 的数据字段是 properties
+// （不是 spec 写的 data），保留为原始 JSON，由调用方按 Type 反序列化。
 type Event struct {
-	ID   string          `json:"id"`
-	Type string          `json:"type"`
-	Data json.RawMessage `json:"data,omitempty"`
+	ID         string          `json:"id"`
+	Type       string          `json:"type"`
+	Properties json.RawMessage `json:"properties,omitempty"`
 }
 
-// Event Type 常量。完整覆盖 spec 中 88 种事件字符串。
+// Event Type 常量。覆盖服务端实测发出的事件（V1 经典事件体系，
+// 实测不产生 session.next.* 与 *.v2.* 事件）。
 const (
-	EventCatalogUpdated             = "catalog.updated"
-	EventCommandExecuted            = "command.executed"
-	EventFileEdited                 = "file.edited"
-	EventFileWatcherUpdated         = "file.watcher.updated"
-	EventGlobalDisposed             = "global.disposed"
-	EventInstallationUpdateAvail    = "installation.update-available"
-	EventInstallationUpdated        = "installation.updated"
-	EventIntegrationConnUpdated     = "integration.connection.updated"
-	EventIntegrationUpdated         = "integration.updated"
-	EventLspUpdated                 = "lsp.updated"
-	EventMcpBrowserOpenFailed       = "mcp.browser.open.failed"
-	EventMcpToolsChanged            = "mcp.tools.changed"
-	EventMessagePartDelta           = "message.part.delta"
-	EventMessagePartRemoved         = "message.part.removed"
-	EventMessagePartUpdated         = "message.part.updated"
-	EventMessageRemoved             = "message.removed"
-	EventMessageUpdated             = "message.updated"
-	EventModelsDevRefreshed         = "models-dev.refreshed"
-	EventPermissionAsked            = "permission.asked"
-	EventPermissionReplied          = "permission.replied"
-	EventPluginAdded                = "plugin.added"
-	EventProjectDirectoriesUpdated  = "project.directories.updated"
-	EventProjectUpdated             = "project.updated"
-	EventPtyCreated                 = "pty.created"
-	EventPtyDeleted                 = "pty.deleted"
-	EventPtyExited                  = "pty.exited"
-	EventPtyUpdated                 = "pty.updated"
-	EventQuestionAsked              = "question.asked"
-	EventQuestionRejected           = "question.rejected"
-	EventQuestionReplied            = "question.replied"
-	EventReferenceUpdated           = "reference.updated"
-	EventServerConnected            = "server.connected"
-	EventSessionCompacted           = "session.compacted"
-	EventSessionCreated             = "session.created"
-	EventSessionDeleted             = "session.deleted"
-	EventSessionDiff                = "session.diff"
-	EventSessionError               = "session.error"
-	EventSessionIdle                = "session.idle"
-	EventSessionNextAgentSwitched   = "session.next.agent.switched"
-	EventSessionNextCompactionDelta = "session.next.compaction.delta"
-	EventSessionNextCompactionEnded = "session.next.compaction.ended"
-	EventSessionNextCompactionStart = "session.next.compaction.started"
-	EventSessionNextContextUpdated  = "session.next.context.updated"
-	EventSessionNextModelSwitched   = "session.next.model.switched"
-	EventSessionNextMoved           = "session.next.moved"
-	EventSessionNextPromptAdmitted  = "session.next.prompt.admitted"
-	EventSessionNextPrompted        = "session.next.prompted"
-	EventSessionNextReasoningDelta  = "session.next.reasoning.delta"
-	EventSessionNextReasoningEnded  = "session.next.reasoning.ended"
-	EventSessionNextReasoningStart  = "session.next.reasoning.started"
-	EventSessionNextRetried         = "session.next.retried"
-	EventSessionNextRevertCleared   = "session.next.revert.cleared"
-	EventSessionNextRevertCommitted = "session.next.revert.committed"
-	EventSessionNextRevertStaged    = "session.next.revert.staged"
-	EventSessionNextShellEnded      = "session.next.shell.ended"
-	EventSessionNextShellStarted    = "session.next.shell.started"
-	EventSessionNextStepEnded       = "session.next.step.ended"
-	EventSessionNextStepFailed      = "session.next.step.failed"
-	EventSessionNextStepStarted     = "session.next.step.started"
-	EventSessionNextSynthetic       = "session.next.synthetic"
-	EventSessionNextTextDelta       = "session.next.text.delta"
-	EventSessionNextTextEnded       = "session.next.text.ended"
-	EventSessionNextTextStarted     = "session.next.text.started"
-	EventSessionNextToolCalled      = "session.next.tool.called"
-	EventSessionNextToolFailed      = "session.next.tool.failed"
-	EventSessionNextToolInputDelta  = "session.next.tool.input.delta"
-	EventSessionNextToolInputEnded  = "session.next.tool.input.ended"
-	EventSessionNextToolInputStart  = "session.next.tool.input.started"
-	EventSessionNextToolProgress    = "session.next.tool.progress"
-	EventSessionNextToolSuccess     = "session.next.tool.success"
-	EventSessionStatus              = "session.status"
-	EventSessionUpdated             = "session.updated"
-	EventTodoUpdated                = "todo.updated"
-	EventTuiCommandExecute          = "tui.command.execute"
-	EventTuiPromptAppend            = "tui.prompt.append"
-	EventTuiSessionSelect           = "tui.session.select"
-	EventTuiToastShow               = "tui.toast.show"
-	EventVcsBranchUpdated           = "vcs.branch.updated"
-	EventWorkspaceFailed            = "workspace.failed"
-	EventWorkspaceReady             = "workspace.ready"
-	EventWorkspaceStatus            = "workspace.status"
-	EventWorktreeFailed             = "worktree.failed"
-	EventWorktreeReady              = "worktree.ready"
+	EventCatalogUpdated            = "catalog.updated"
+	EventCommandExecuted           = "command.executed"
+	EventFileEdited                = "file.edited"
+	EventFileWatcherUpdated        = "file.watcher.updated"
+	EventGlobalDisposed            = "global.disposed"
+	EventInstallationUpdateAvail   = "installation.update-available"
+	EventInstallationUpdated       = "installation.updated"
+	EventIntegrationConnUpdated    = "integration.connection.updated"
+	EventIntegrationUpdated        = "integration.updated"
+	EventLspUpdated                = "lsp.updated"
+	EventMcpBrowserOpenFailed      = "mcp.browser.open.failed"
+	EventMcpToolsChanged           = "mcp.tools.changed"
+	EventMessagePartDelta          = "message.part.delta"
+	EventMessagePartRemoved        = "message.part.removed"
+	EventMessagePartUpdated        = "message.part.updated"
+	EventMessageRemoved            = "message.removed"
+	EventMessageUpdated            = "message.updated"
+	EventModelsDevRefreshed        = "models-dev.refreshed"
+	EventPermissionAsked           = "permission.asked"
+	EventPermissionReplied         = "permission.replied"
+	EventPluginAdded               = "plugin.added"
+	EventProjectDirectoriesUpdated = "project.directories.updated"
+	EventProjectUpdated            = "project.updated"
+	EventPtyCreated                = "pty.created"
+	EventPtyDeleted                = "pty.deleted"
+	EventPtyExited                 = "pty.exited"
+	EventPtyUpdated                = "pty.updated"
+	EventQuestionAsked             = "question.asked"
+	EventQuestionRejected          = "question.rejected"
+	EventQuestionReplied           = "question.replied"
+	EventReferenceUpdated          = "reference.updated"
+	EventServerConnected           = "server.connected"
+	EventSessionCompacted          = "session.compacted"
+	EventSessionCreated            = "session.created"
+	EventSessionDeleted            = "session.deleted"
+	EventSessionDiff               = "session.diff"
+	EventSessionError              = "session.error"
+	EventSessionIdle               = "session.idle"
+	EventSessionStatus             = "session.status"
+	EventSessionUpdated            = "session.updated"
+	EventTodoUpdated               = "todo.updated"
+	EventTuiCommandExecute         = "tui.command.execute"
+	EventTuiPromptAppend           = "tui.prompt.append"
+	EventTuiSessionSelect          = "tui.session.select"
+	EventTuiToastShow              = "tui.toast.show"
+	EventVcsBranchUpdated          = "vcs.branch.updated"
+	EventWorkspaceFailed           = "workspace.failed"
+	EventWorkspaceReady            = "workspace.ready"
+	EventWorkspaceStatus           = "workspace.status"
+	EventWorktreeFailed            = "worktree.failed"
+	EventWorktreeReady             = "worktree.ready"
 )
 
-// ============ scope 内高频事件的 Data struct ============
+// ============ scope 内高频事件的 properties struct（V1 实测格式） ============
 
-type TextDeltaData struct {
-	Timestamp          float64 `json:"timestamp"`
-	SessionID          string  `json:"sessionID"`
-	AssistantMessageID string  `json:"assistantMessageID"`
-	TextID             string  `json:"textID"`
-	Delta              string  `json:"delta"`
+// PartDeltaData 是 message.part.delta 的 properties。
+// field 恒为 "text"；part 是 text 还是 reasoning 需结合 partID 查
+// message.part.updated 中的 part.type（SDK 内部已做，见 mapToHighEvent）。
+type PartDeltaData struct {
+	SessionID string `json:"sessionID"`
+	MessageID string `json:"messageID"`
+	PartID    string `json:"partID"`
+	Field     string `json:"field"`
+	Delta     string `json:"delta"`
 }
 
-type ToolCalledData struct {
-	Timestamp          float64        `json:"timestamp"`
-	SessionID          string         `json:"sessionID"`
-	AssistantMessageID string         `json:"assistantMessageID"`
-	CallID             string         `json:"callID"`
-	Tool               string         `json:"tool"`
-	Input              map[string]any `json:"input"`
+// PartUpdatedData 是 message.part.updated 的 properties。
+type PartUpdatedData struct {
+	SessionID string `json:"sessionID"`
+	Part      Part   `json:"part"`
+	Time      int64  `json:"time"`
 }
 
-type ToolSuccessData struct {
-	Timestamp          float64           `json:"timestamp"`
-	SessionID          string            `json:"sessionID"`
-	AssistantMessageID string            `json:"assistantMessageID"`
-	CallID             string            `json:"callID"`
-	Structured         map[string]any    `json:"structured"`
-	Content            []json.RawMessage `json:"content"`
+// Part 是消息的一个组成块。type 取值：text / reasoning / tool /
+// step-start / step-finish 等。tool 专有字段在 State。
+type Part struct {
+	ID        string     `json:"id"`
+	MessageID string     `json:"messageID"`
+	SessionID string     `json:"sessionID"`
+	Type      string     `json:"type"`
+	Text      string     `json:"text,omitempty"`
+	Reason    string     `json:"reason,omitempty"` // step-finish 的终止原因，"stop" 为成功
+	Tool      string     `json:"tool,omitempty"`
+	CallID    string     `json:"callID,omitempty"`
+	State     *ToolState `json:"state,omitempty"`
+	Tokens    StepTokens `json:"tokens,omitempty"`
+	Cost      float64    `json:"cost,omitempty"`
 }
 
-type ToolFailedData struct {
-	Timestamp          float64        `json:"timestamp"`
-	SessionID          string         `json:"sessionID"`
-	AssistantMessageID string         `json:"assistantMessageID"`
-	CallID             string         `json:"callID"`
-	Error              map[string]any `json:"error"`
+// ToolState 是 tool part 的执行状态。
+type ToolState struct {
+	Status string         `json:"status"` // pending | running | completed | error
+	Input  map[string]any `json:"input,omitempty"`
+	Output string         `json:"output,omitempty"`
+	Error  string         `json:"error,omitempty"`
 }
 
-type StepEndedData struct {
-	Timestamp          float64    `json:"timestamp"`
-	SessionID          string     `json:"sessionID"`
-	AssistantMessageID string     `json:"assistantMessageID"`
-	Finish             string     `json:"finish"`
-	Cost               float64    `json:"cost"`
-	Tokens             StepTokens `json:"tokens"`
+// MessageUpdatedData 是 message.updated 的 properties。
+type MessageUpdatedData struct {
+	SessionID string      `json:"sessionID"`
+	Info      MessageInfo `json:"info"`
 }
 
 type StepTokens struct {

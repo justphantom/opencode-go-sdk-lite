@@ -59,7 +59,7 @@ func main() {
 	}
 
 	loc := &oc.LocationRef{Directory: absDir(*dir)}
-	stream, err := client.NewGlobalEventStream(ctx)
+	stream, err := client.NewGlobalEventStream(ctx, loc)
 	if err != nil {
 		log.Fatalf("NewGlobalEventStream: %v", err)
 	}
@@ -108,14 +108,14 @@ func main() {
 
 	for ev := range rawEvents {
 		switch ev.Type {
-		case oc.EventSessionNextTextDelta:
-			var d oc.TextDeltaData
-			_ = json.Unmarshal(ev.Data, &d)
+		case oc.EventMessagePartDelta:
+			var d oc.PartDeltaData
+			_ = json.Unmarshal(ev.Properties, &d)
 			fmt.Print(d.Delta)
 
 		case oc.EventPermissionAsked:
 			var d oc.PermissionAskedData
-			_ = json.Unmarshal(ev.Data, &d)
+			_ = json.Unmarshal(ev.Properties, &d)
 			fmt.Printf("\n[perm] permission=%s patterns=%v → %s\n", d.Permission, d.Patterns, *perm)
 			if err := client.ReplyPermission(ctx, d.ID, *perm, ""); err != nil {
 				log.Printf("ReplyPermission: %v", err)
@@ -123,24 +123,24 @@ func main() {
 
 		case oc.EventQuestionAsked:
 			var d oc.QuestionAskedData
-			_ = json.Unmarshal(ev.Data, &d)
+			_ = json.Unmarshal(ev.Properties, &d)
 			ans := buildAnswers(d.Questions, *custom)
 			fmt.Printf("\n[question] %d 个问题 → %v\n", len(d.Questions), ans)
 			if err := client.ReplyQuestion(ctx, d.ID, &oc.QuestionReply{Answers: ans}); err != nil {
 				log.Printf("ReplyQuestion: %v", err)
 			}
 
-		case oc.EventSessionNextStepEnded:
-			var d oc.StepEndedData
-			_ = json.Unmarshal(ev.Data, &d)
-			if d.Finish == "stop" || d.Finish == "" {
-				fmt.Printf("\n[done] finish=%s in=%d out=%d cost=%.4f\n",
-					d.Finish, int(d.Tokens.Input), int(d.Tokens.Output), d.Cost)
+		case oc.EventMessagePartUpdated:
+			var d oc.PartUpdatedData
+			_ = json.Unmarshal(ev.Properties, &d)
+			if d.Part.Type == "step-finish" && (d.Part.Reason == "stop" || d.Part.Reason == "") {
+				fmt.Printf("\n[done] reason=%s in=%d out=%d cost=%.4f\n",
+					d.Part.Reason, int(d.Part.Tokens.Input), int(d.Part.Tokens.Output), d.Part.Cost)
 				return
 			}
 
 		case oc.EventSessionError:
-			fmt.Printf("\n[error] %s\n", ev.Data)
+			fmt.Printf("\n[error] %s\n", ev.Properties)
 			return
 		}
 	}

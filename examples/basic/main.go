@@ -63,7 +63,7 @@ func main() {
 	}
 
 	// 4. 必须在 Prompt 前建全局流，避免丢首帧。
-	stream, err := client.NewGlobalEventStream(ctx)
+	stream, err := client.NewGlobalEventStream(ctx, loc)
 	if err != nil {
 		log.Fatalf("NewGlobalEventStream: %v", err)
 	}

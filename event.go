@@ -16,6 +16,9 @@ const (
 
 // SessionEventsOpt 配置 SessionEvents 订阅。
 type SessionEventsOpt struct {
+	// Location 定位工作区。事件总线按 directory 隔离（实测）：不带 directory
+	// 的连接收不到其他 directory 下会话的事件。必须与目标 session 的 directory 一致。
+	Location *LocationRef
 	// BackoffMin / BackoffMax 限制指数退避区间。零值走默认。
 	BackoffMin time.Duration
 	BackoffMax time.Duration
@@ -75,7 +78,7 @@ func (c *Client) runSessionEvents(ctx context.Context, sessionID string, opt *Se
 			return
 		}
 
-		resp, err := c.connectStream(ctx)
+		resp, err := c.connectStream(ctx, opt.Location)
 		if err != nil {
 			// ctx 取消属于正常退出
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -129,8 +132,8 @@ func (c *Client) runSessionEvents(ctx context.Context, sessionID string, opt *Se
 	}
 }
 
-func (c *Client) connectStream(ctx context.Context) (*http.Response, error) {
-	req, err := c.newRequest(ctx, http_GET, "/event", nil, nil)
+func (c *Client) connectStream(ctx context.Context, loc *LocationRef) (*http.Response, error) {
+	req, err := c.newRequest(ctx, http_GET, "/event", locationQuery(loc), nil)
 	if err != nil {
 		return nil, err
 	}

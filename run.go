@@ -89,6 +89,7 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 
 	var assistantID string
 	var accText strings.Builder
+	parts := partTracker{}
 
 	for {
 		select {
@@ -102,7 +103,7 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 				out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true, result: "stream closed"}
 				return
 			}
-			he, emit, terminal := mapToHighEvent(ev, &assistantID)
+			he, emit, terminal := mapToHighEvent(ev, &assistantID, parts)
 			if !emit {
 				continue
 			}

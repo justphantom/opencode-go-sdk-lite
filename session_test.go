@@ -31,6 +31,28 @@ func TestNew_appliesOptions(t *testing.T) {
 	}
 }
 
+func TestWithBasicAuth(t *testing.T) {
+	c, err := New("http://x", WithBasicAuth("opencode", "secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// base64("opencode:secret")
+	if got := c.headers["Authorization"]; got != "Basic b3BlbmNvZGU6c2VjcmV0" {
+		t.Errorf("Authorization = %q", got)
+	}
+
+	c2, _ := New("http://x", WithPassword("secret"))
+	if got := c2.headers["Authorization"]; got != "Basic b3BlbmNvZGU6c2VjcmV0" {
+		t.Errorf("WithPassword Authorization = %q", got)
+	}
+
+	// 与 WithToken 互斥：后应用者覆盖
+	c3, _ := New("http://x", WithToken("tok"), WithPassword("secret"))
+	if got := c3.headers["Authorization"]; got != "Basic b3BlbmNvZGU6c2VjcmV0" {
+		t.Errorf("override Authorization = %q", got)
+	}
+}
+
 const sessionFixture = `{"id":"ses_1","projectID":"prj","directory":"/tmp","title":"t","agent":"build",
 	"model":{"id":"m","providerID":"p"},"cost":0,
 	"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},

@@ -9,17 +9,19 @@ import (
 )
 
 // GlobalEventStream 维护一条到 /event 的全局长连，按 sessionID 路由事件给订阅者。
+// 事件总线按 directory 隔离（实测）：loc 必须与目标会话的 directory 一致，
+// 否则收不到这些会话的事件。
 // 设计要点（移植自 lark-bridge/internal/opencodeserve/stream.go，已验证）：
 //   - 指数退避 100ms→5s，连接存活 <2s 视为 flapping 不重置退避
 //   - 心跳 watchdog 15s 无帧则强制重连破半开 TCP
 //   - panic recover 不让 goroutine 崩溃传播
 //   - 终止事件（session.idle/session.error/session.deleted）必送达，非终止满则丢
 //
-// 注意：全局流不支持 ?after= 续传（spec 与实测确认），断连窗口的 delta 事件会丢失，
-// 靠后续的 started/ended/step 等持久事件在重连后补齐语义。
+// 注意：全局流不支持续传，断连窗口的 delta 事件会丢失。
 type GlobalEventStream struct {
 	c    *Client
 	http *http.Client
+	loc  *LocationRef
 
 	mu   sync.Mutex
 	subs map[string]chan Event
@@ -47,11 +49,13 @@ const (
 )
 
 // NewGlobalEventStream 构造并启动后台 goroutine（reader + heartbeat watchdog）。
+// loc 定位事件总线（按 directory 隔离）；nil 表示服务端默认目录。
 // 调用方应在第一次 Prompt 前调用，避免丢首帧。Close 即停止后台。
-func (c *Client) NewGlobalEventStream(ctx context.Context) (*GlobalEventStream, error) {
+func (c *Client) NewGlobalEventStream(ctx context.Context, loc *LocationRef) (*GlobalEventStream, error) {
 	s := &GlobalEventStream{
 		c:             c,
 		http:          c.httpClient,
+		loc:           loc,
 		subs:          make(map[string]chan Event),
 		stopCh:        make(chan struct{}),
 		done:          make(chan struct{}),
@@ -161,7 +165,7 @@ func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived boo
 	s.setConnCancel(cancel)
 	defer s.clearConnCancel()
 
-	req, err := s.c.newRequest(connCtx, http_GET, "/event", nil, nil)
+	req, err := s.c.newRequest(connCtx, http_GET, "/event", locationQuery(s.loc), nil)
 	if err != nil {
 		return true, true
 	}

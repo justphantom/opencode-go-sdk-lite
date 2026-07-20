@@ -3,6 +3,7 @@ package opencode
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +25,19 @@ type Option func(*Client)
 // WithToken 设置 Authorization: Bearer <token>。
 func WithToken(token string) Option {
 	return func(c *Client) { c.headers["Authorization"] = "Bearer " + token }
+}
+
+// WithBasicAuth 设置 HTTP Basic 认证。与 WithToken 互斥，后应用者生效。
+func WithBasicAuth(user, pass string) Option {
+	return func(c *Client) {
+		c.headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+	}
+}
+
+// WithPassword 以 opencode serve 密码模式登录（Basic 认证，用户名固定 "opencode"，
+// 密码即服务端 OPENCODE_SERVER_PASSWORD）。
+func WithPassword(pass string) Option {
+	return WithBasicAuth("opencode", pass)
 }
 
 // WithHTTPClient 注入自定义 *http.Client。

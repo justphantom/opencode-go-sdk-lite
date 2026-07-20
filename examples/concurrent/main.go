@@ -57,7 +57,7 @@ func main() {
 
 	// 关键：所有 session 共用同一个全局流。只需建一次。
 	loc := &oc.LocationRef{Directory: absDir(*dir)}
-	stream, err := client.NewGlobalEventStream(ctx)
+	stream, err := client.NewGlobalEventStream(ctx, loc)
 	if err != nil {
 		log.Fatalf("NewGlobalEventStream: %v", err)
 	}
@@ -101,20 +101,20 @@ func runOne(ctx context.Context, client *oc.Client, stream *oc.GlobalEventStream
 	var sb strings.Builder
 	for ev := range ch {
 		switch ev.Type {
-		case oc.EventSessionNextTextDelta:
-			var d oc.TextDeltaData
-			if json.Unmarshal(ev.Data, &d) == nil {
+		case oc.EventMessagePartDelta:
+			var d oc.PartDeltaData
+			if json.Unmarshal(ev.Properties, &d) == nil {
 				sb.WriteString(d.Delta)
 			}
-		case oc.EventSessionNextStepEnded:
-			var d oc.StepEndedData
-			_ = json.Unmarshal(ev.Data, &d)
-			if d.Finish == "stop" || d.Finish == "" {
+		case oc.EventMessagePartUpdated:
+			var d oc.PartUpdatedData
+			_ = json.Unmarshal(ev.Properties, &d)
+			if d.Part.Type == "step-finish" && (d.Part.Reason == "stop" || d.Part.Reason == "") {
 				fmt.Printf("[worker %d] 回复: %s\n", idx, strings.TrimSpace(sb.String()))
 				return nil
 			}
-		case oc.EventSessionError, oc.EventSessionNextStepFailed:
-			return fmt.Errorf("session error: %s", string(ev.Data))
+		case oc.EventSessionError:
+			return fmt.Errorf("session error: %s", string(ev.Properties))
 		}
 	}
 	return errors.New("stream closed before finish")

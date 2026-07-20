@@ -30,8 +30,8 @@ func mustJSON(v any) string {
 
 func deltaEvent(sessionID, delta string) Event {
 	return Event{
-		Type: EventSessionNextTextDelta,
-		Data: jsonRaw(mustJSON(TextDeltaData{SessionID: sessionID, Delta: delta})),
+		Type:       EventMessagePartDelta,
+		Properties: jsonRaw(mustJSON(PartDeltaData{SessionID: sessionID, Delta: delta})),
 	}
 }
 
@@ -62,8 +62,8 @@ func TestSessionEvents_filtersBySessionID(t *testing.T) {
 	if !ok {
 		t.Fatal("events closed before first event")
 	}
-	var d TextDeltaData
-	_ = json.Unmarshal(ev.Data, &d)
+	var d PartDeltaData
+	_ = json.Unmarshal(ev.Properties, &d)
 	if d.SessionID != "ses_1" || d.Delta != "mine" {
 		t.Errorf("ev = %+v", d)
 	}
@@ -109,8 +109,8 @@ func TestSessionEvents_reconnects(t *testing.T) {
 		if !ok {
 			t.Fatal("events closed")
 		}
-		var d TextDeltaData
-		_ = json.Unmarshal(ev.Data, &d)
+		var d PartDeltaData
+		_ = json.Unmarshal(ev.Properties, &d)
 		if d.Delta != "after-reconnect" {
 			t.Errorf("delta = %q", d.Delta)
 		}

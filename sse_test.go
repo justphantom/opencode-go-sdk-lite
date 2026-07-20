@@ -76,19 +76,19 @@ func TestSSEScanner_skipsComment(t *testing.T) {
 }
 
 func TestDecodeEvent_fullEnvelope(t *testing.T) {
-	data := `{"id":"evt_1","type":"session.next.text.delta","data":{"timestamp":1.5,"sessionID":"ses_1","assistantMessageID":"msg_1","textID":"txt_1","delta":"hi"}}`
+	data := `{"id":"evt_1","type":"message.part.delta","properties":{"sessionID":"ses_1","messageID":"msg_1","partID":"prt_1","field":"text","delta":"hi"}}`
 	ev, err := decodeEvent("", "", data)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if ev.Type != EventSessionNextTextDelta {
+	if ev.Type != EventMessagePartDelta {
 		t.Errorf("type = %q", ev.Type)
 	}
-	var td TextDeltaData
-	if err := json.Unmarshal(ev.Data, &td); err != nil {
-		t.Fatalf("data unmarshal: %v", err)
+	var td PartDeltaData
+	if err := json.Unmarshal(ev.Properties, &td); err != nil {
+		t.Fatalf("properties unmarshal: %v", err)
 	}
 	if td.Delta != "hi" || td.SessionID != "ses_1" {
-		t.Errorf("delta data = %+v", td)
+		t.Errorf("delta properties = %+v", td)
 	}
 }

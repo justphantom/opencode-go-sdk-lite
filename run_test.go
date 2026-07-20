@@ -70,7 +70,7 @@ func TestRun_TextOnlyTurn(t *testing.T) {
 	c, _ := New(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, _ := c.NewGlobalEventStream(ctx)
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
 	defer func() { _ = stream.Close() }()
 
 	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
@@ -114,7 +114,7 @@ func TestRun_PromptFirstEvent(t *testing.T) {
 	c, _ := New(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, _ := c.NewGlobalEventStream(ctx)
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
 	defer func() { _ = stream.Close() }()
 
 	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
@@ -153,8 +153,8 @@ func frames_otherAssistant(sid string) string {
 
 func sseStepStarted(sid, mid string, seq int64) string {
 	return fmt.Sprintf(
-		`data: {"id":"evt_%d","type":"session.next.step.started","durable":{"aggregateID":"%s","seq":%d,"version":1},"data":{"timestamp":1,"sessionID":"%s","assistantMessageID":"%s","agent":"build","model":{"id":"m","providerID":"p"}}}`+"\n\n",
-		seq, sid, seq, sid, mid,
+		`data: {"id":"evt_%d","type":"message.part.updated","properties":{"sessionID":"%s","part":{"id":"prt_s1","messageID":"%s","sessionID":"%s","type":"step-start"},"time":1}}`+"\n\n",
+		seq, sid, mid, sid,
 	)
 }
 
@@ -165,7 +165,7 @@ func TestRun_MessageIDFiltering(t *testing.T) {
 	c, _ := New(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, _ := c.NewGlobalEventStream(ctx)
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
 	defer func() { _ = stream.Close() }()
 
 	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
@@ -215,7 +215,7 @@ func TestRun_AbortCancelsStream(t *testing.T) {
 	c, _ := New(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, _ := c.NewGlobalEventStream(ctx)
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
 	defer func() { _ = stream.Close() }()
 
 	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
@@ -260,7 +260,7 @@ func TestRun_ResultCarriesAccumulatedText(t *testing.T) {
 	c, _ := New(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, _ := c.NewGlobalEventStream(ctx)
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
 	defer func() { _ = stream.Close() }()
 
 	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})

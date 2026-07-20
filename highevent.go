@@ -1,12 +1,9 @@
 package opencode
 
-import (
-	"encoding/json"
-	"strings"
-)
+import "encoding/json"
 
 // HighEventKind 是高层事件的语义类别，对齐 lark-bridge event.go 的 10 个 kind。
-// 不同于原始 Event（88 种 type 字符串），HighEvent 把过程流归纳为少数可消费类别。
+// 不同于原始 Event（V1 经典事件体系），HighEvent 把过程流归纳为少数可消费类别。
 type HighEventKind string
 
 const (
@@ -56,136 +53,112 @@ func (e HighEvent) CacheRead() int      { return e.cacheRead }
 func (e HighEvent) CacheWrite() int     { return e.cacheWrite }
 func (e HighEvent) Cost() float64       { return e.cost }
 
+// partTracker 记录 partID → part.type，供 message.part.delta 路由
+// （delta 事件本身不带 part 类型，实测其 field 恒为 "text"）。
+type partTracker map[string]string
+
 // mapToHighEvent 把原始 Event 映射为 HighEvent。
-// 返回 ok=false 表示该原始事件不产生高层事件（如 location-only、心跳等）。
+// 返回 ok=false 表示该原始事件不产生高层事件（如 session.updated、心跳等）。
 // isTerminal 标记终止事件（result/error），调用方据此 close chan。
 //
-// 映射依据实测：真实服务端发 session.next.* 而非 message.part.*。
-// 完成信号是 session.next.step.ended 且 data.finish="stop"（不是 session.idle）。
-func mapToHighEvent(ev Event, assistantID *string) (HighEvent, bool, bool) {
+// 映射依据实测（docs/sse-capture 抓取）：服务端发 V1 经典事件——
+// 文本/思考走 message.part.delta（part 类型由 message.part.updated 登记），
+// 完成信号是 step-finish part 且 reason="stop"（session.idle 兜底）。
+func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent, bool, bool) {
 	switch ev.Type {
-	case EventSessionNextTextDelta:
-		var d TextDeltaData
-		if err := json.Unmarshal(ev.Data, &d); err != nil {
+	case EventMessagePartUpdated:
+		var d PartUpdatedData
+		if err := json.Unmarshal(ev.Properties, &d); err != nil {
 			return HighEvent{}, false, false
 		}
-		trackAssistantID(assistantID, d.AssistantMessageID)
-		return HighEvent{kind: HighEventText, sessionID: d.SessionID, messageID: d.AssistantMessageID, text: d.Delta}, true, false
-
-	case EventSessionNextReasoningDelta:
-		var d struct {
-			SessionID          string `json:"sessionID"`
-			AssistantMessageID string `json:"assistantMessageID"`
-			Delta              string `json:"delta"`
+		p := d.Part
+		if p.Type != "" {
+			parts[p.ID] = p.Type
 		}
-		if err := json.Unmarshal(ev.Data, &d); err != nil {
-			return HighEvent{}, false, false
-		}
-		trackAssistantID(assistantID, d.AssistantMessageID)
-		return HighEvent{kind: HighEventThinking, sessionID: d.SessionID, messageID: d.AssistantMessageID, text: d.Delta}, true, false
-
-	case EventSessionNextStepStarted:
-		var d struct {
-			SessionID          string `json:"sessionID"`
-			AssistantMessageID string `json:"assistantMessageID"`
-		}
-		_ = json.Unmarshal(ev.Data, &d)
-		trackAssistantID(assistantID, d.AssistantMessageID)
-		return HighEvent{kind: HighEventStepStart, sessionID: d.SessionID, messageID: d.AssistantMessageID}, true, false
-
-	case EventSessionNextToolCalled:
-		var d ToolCalledData
-		if err := json.Unmarshal(ev.Data, &d); err != nil {
-			return HighEvent{}, false, false
-		}
-		trackAssistantID(assistantID, d.AssistantMessageID)
-		return HighEvent{
-			kind:      HighEventToolUse,
-			sessionID: d.SessionID,
-			messageID: d.AssistantMessageID,
-			toolName:  d.Tool,
-			toolInput: string(jsonRawOrNil(d.Input)),
-		}, true, false
-
-	case EventSessionNextToolSuccess:
-		var d ToolSuccessData
-		if err := json.Unmarshal(ev.Data, &d); err != nil {
-			return HighEvent{}, false, false
-		}
-		trackAssistantID(assistantID, d.AssistantMessageID)
-		return HighEvent{
-			kind:      HighEventToolResult,
-			sessionID: d.SessionID,
-			messageID: d.AssistantMessageID,
-			text:      joinToolContent(d.Content),
-		}, true, false
-
-	case EventSessionNextToolFailed:
-		var d ToolFailedData
-		if err := json.Unmarshal(ev.Data, &d); err != nil {
-			return HighEvent{}, false, false
-		}
-		trackAssistantID(assistantID, d.AssistantMessageID)
-		return HighEvent{
-			kind:        HighEventToolResult,
-			sessionID:   d.SessionID,
-			messageID:   d.AssistantMessageID,
-			isToolError: true,
-			text:        formatToolError(d.Error),
-		}, true, false
-
-	case EventSessionNextStepEnded:
-		var d StepEndedData
-		if err := json.Unmarshal(ev.Data, &d); err != nil {
-			return HighEvent{}, false, false
-		}
-		trackAssistantID(assistantID, d.AssistantMessageID)
-		// finish="stop" 是成功终止；其他 finish 值（如 length/tooluns）按 step_finish 报告。
-		// result 字段在此留空：终止事件本身不携带 assistant 输出文本，
-		// 由 pump 在关闭 chan 前回填累积的 text delta（见 Client.pump）。
-		if d.Finish == "stop" || d.Finish == "" {
-			return HighEvent{
-				kind:         HighEventResult,
+		switch p.Type {
+		case "step-start":
+			// 只在 assistant 专属 part 上锁定 assistantID：
+			// part.updated 也会回显用户输入的 text part（MessageID 是 user 消息），
+			// 抢锁会把后续 assistant delta 全部过滤掉（实测踩坑）。
+			trackAssistantID(assistantID, p.MessageID)
+			return HighEvent{kind: HighEventStepStart, sessionID: d.SessionID, messageID: p.MessageID}, true, false
+		case "step-finish":
+			trackAssistantID(assistantID, p.MessageID)
+			// reason="stop" 是成功终止；其他 reason（如 tool-calls）按 step_finish 报告。
+			// result 字段留空，由 pump 在关闭 chan 前回填累积的 text delta。
+			he := HighEvent{
 				sessionID:    d.SessionID,
-				messageID:    d.AssistantMessageID,
-				inputTokens:  int(d.Tokens.Input),
-				outputTokens: int(d.Tokens.Output),
-				cacheRead:    int(d.Tokens.Cache.Read),
-				cacheWrite:   int(d.Tokens.Cache.Write),
-				cost:         d.Cost,
-			}, true, true
+				messageID:    p.MessageID,
+				inputTokens:  int(p.Tokens.Input),
+				outputTokens: int(p.Tokens.Output),
+				cacheRead:    int(p.Tokens.Cache.Read),
+				cacheWrite:   int(p.Tokens.Cache.Write),
+				cost:         p.Cost,
+			}
+			if p.Reason == "stop" || p.Reason == "" {
+				he.kind = HighEventResult
+				return he, true, true
+			}
+			he.kind = HighEventStepFinish
+			he.result = p.Reason
+			return he, true, false
+		case "tool":
+			trackAssistantID(assistantID, p.MessageID)
+			if p.State == nil {
+				return HighEvent{}, false, false
+			}
+			switch p.State.Status {
+			case "running":
+				return HighEvent{
+					kind:      HighEventToolUse,
+					sessionID: d.SessionID,
+					messageID: p.MessageID,
+					toolName:  p.Tool,
+					toolInput: string(jsonRawOrNil(p.State.Input)),
+				}, true, false
+			case "completed":
+				return HighEvent{
+					kind:      HighEventToolResult,
+					sessionID: d.SessionID,
+					messageID: p.MessageID,
+					text:      p.State.Output,
+				}, true, false
+			case "error":
+				return HighEvent{
+					kind:        HighEventToolResult,
+					sessionID:   d.SessionID,
+					messageID:   p.MessageID,
+					isToolError: true,
+					text:        p.State.Error,
+				}, true, false
+			}
 		}
-		return HighEvent{
-			kind:         HighEventStepFinish,
-			sessionID:    d.SessionID,
-			messageID:    d.AssistantMessageID,
-			result:       d.Finish,
-			inputTokens:  int(d.Tokens.Input),
-			outputTokens: int(d.Tokens.Output),
-			cacheRead:    int(d.Tokens.Cache.Read),
-			cacheWrite:   int(d.Tokens.Cache.Write),
-			cost:         d.Cost,
-		}, true, false
+		return HighEvent{}, false, false
 
-	case EventSessionNextStepFailed:
-		var d struct {
-			SessionID          string         `json:"sessionID"`
-			AssistantMessageID string         `json:"assistantMessageID"`
-			Error              map[string]any `json:"error"`
+	case EventMessagePartDelta:
+		var d PartDeltaData
+		if err := json.Unmarshal(ev.Properties, &d); err != nil {
+			return HighEvent{}, false, false
 		}
-		_ = json.Unmarshal(ev.Data, &d)
-		trackAssistantID(assistantID, d.AssistantMessageID)
-		return HighEvent{
-			kind:      HighEventError,
-			sessionID: d.SessionID,
-			messageID: d.AssistantMessageID,
-			isError:   true,
-		}, true, true
+		trackAssistantID(assistantID, d.MessageID)
+		// part 类型未知（delta 先于 part.updated 到达）时按 text 处理，
+		// 与实测时序（part.updated 先达）一致。
+		if parts[d.PartID] == "reasoning" {
+			return HighEvent{kind: HighEventThinking, sessionID: d.SessionID, messageID: d.MessageID, text: d.Delta}, true, false
+		}
+		return HighEvent{kind: HighEventText, sessionID: d.SessionID, messageID: d.MessageID, text: d.Delta}, true, false
+
+	case EventSessionIdle:
+		// turn 结束兜底信号；step-finish(reason=stop) 通常先到，此事件主要用于
+		// 中断/无 step 的场景。result 由 pump 回填。
+		var d SessionIdleData
+		_ = json.Unmarshal(ev.Properties, &d)
+		return HighEvent{kind: HighEventResult, sessionID: d.SessionID}, true, true
 
 	case EventSessionError:
 		var d SessionErrorData
-		_ = json.Unmarshal(ev.Data, &d)
-		return HighEvent{kind: HighEventError, sessionID: d.SessionID, isError: true}, true, true
+		_ = json.Unmarshal(ev.Properties, &d)
+		return HighEvent{kind: HighEventError, sessionID: d.SessionID, isError: true, result: formatErrorMap(d.Error)}, true, true
 	}
 	return HighEvent{}, false, false
 }
@@ -210,36 +183,9 @@ func jsonRawOrNil(m map[string]any) []byte {
 	return b
 }
 
-// joinToolContent 拼接 tool.success 事件 content 数组里所有 type=="text" 的
-// text 字段，作为 HighEvent.text 供消费方渲染工具输出。服务端实测格式：
-// [{"type":"text","text":"..."}, ...]；其他类型（image/file 等）忽略。
-func joinToolContent(content []json.RawMessage) string {
-	if len(content) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, raw := range content {
-		var part struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(raw, &part); err != nil {
-			continue
-		}
-		if part.Type != "text" || part.Text == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(part.Text)
-	}
-	return b.String()
-}
-
-// formatToolError 把 tool.failed 的 error map 拍平成一行可读文本。
+// formatErrorMap 把 error map 拍平成一行可读文本。
 // 实测 error 至少含 message；无则回退到 JSON 序列化。
-func formatToolError(errMap map[string]any) string {
+func formatErrorMap(errMap map[string]any) string {
 	if len(errMap) == 0 {
 		return ""
 	}

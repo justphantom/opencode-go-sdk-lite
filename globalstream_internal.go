@@ -65,27 +65,26 @@ func recoverPanic(where string) {
 	}
 }
 
-// extractSessionID 从事件 data 中提取 sessionID 用于路由。
+// extractSessionID 从事件 properties 中提取 sessionID 用于路由。
 func extractSessionID(ev Event) string {
-	if len(ev.Data) == 0 {
+	if len(ev.Properties) == 0 {
 		return ""
 	}
 	var probe struct {
 		SessionID string `json:"sessionID"`
 	}
-	if err := json.Unmarshal(ev.Data, &probe); err != nil {
+	if err := json.Unmarshal(ev.Properties, &probe); err != nil {
 		return ""
 	}
 	return probe.SessionID
 }
 
 // isTerminalEvent 判断是否为终止事件（必送达，不能丢）。
-// 注意：实测中真实完成信号是 session.next.step.ended+finish=stop，但 idle/error/deleted
-// 也是终止语义，这里都按终止处理。
+// 实测 turn 的结束信号：step-finish(reason=stop) → message.updated →
+// session.status idle → session.idle；idle/error/deleted 均按终止处理。
 func isTerminalEvent(t string) bool {
 	switch t {
-	case EventSessionIdle, EventSessionError, EventSessionDeleted,
-		EventSessionNextStepEnded, EventSessionNextStepFailed:
+	case EventSessionIdle, EventSessionError, EventSessionDeleted:
 		return true
 	}
 	return false

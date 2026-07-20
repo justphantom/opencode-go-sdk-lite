@@ -1,10 +1,11 @@
 // Command integration-check 对运行中的 opencode serve 做端到端 SDK 验证。
-// 用法: go run ./cmd/integration-check
+// 用法: go run ./cmd/integration-check [-url http://127.0.0.1:4096] [-pass opencode]
 // 默认指向 http://127.0.0.1:6096，无口令。
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -13,13 +14,21 @@ import (
 	oc "github.com/justphantom/opencode-go-sdk-lite"
 )
 
-const baseURL = "http://127.0.0.1:6096"
+var (
+	flagURL  = flag.String("url", "http://127.0.0.1:6096", "opencode serve 地址")
+	flagPass = flag.String("pass", "", "serve 密码（Basic 认证，用户名 opencode）")
+)
 
 func main() {
+	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	c, err := oc.New(baseURL)
+	opts := []oc.Option{}
+	if *flagPass != "" {
+		opts = append(opts, oc.WithPassword(*flagPass))
+	}
+	c, err := oc.New(*flagURL, opts...)
 	must("New", err)
 
 	// 用例收集：每个用例输出 ok / 失败 / 关键样本
@@ -190,17 +199,28 @@ func main() {
 
 var selectedModel *oc.ModelRef
 
-// testSessionEvents 订阅会话事件（内部为全局流过滤）。最多等 5 秒。
+// testSessionEvents 先订阅再发 prompt，应收到本轮 turn 的事件。最多等 15 秒。
 func testSessionEvents(ctx context.Context, c *oc.Client, sid string, report func(string, string, string)) {
-	subCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	subCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	events, errc := c.SessionEvents(subCtx, sid, &oc.SessionEventsOpt{
 		BackoffMin: 200 * time.Millisecond,
 		BackoffMax: 2 * time.Second,
 	})
 
+	// 订阅建立后再发 prompt，否则事件可能先于连接到达
+	time.Sleep(300 * time.Millisecond)
+	go func() {
+		_, err := c.Prompt(subCtx, sid, &oc.PromptReq{
+			Parts: []oc.PromptPart{{Type: "text", Text: "只回复一个字：好"}},
+		})
+		if err != nil {
+			report("SessionEvents", "FAIL", "prompt: "+err.Error())
+		}
+	}()
+
 	var seen []string
-	timeout := time.After(5 * time.Second)
+	timeout := time.After(15 * time.Second)
 loop:
 	for {
 		select {
@@ -224,18 +244,18 @@ loop:
 	}
 	cancel()
 	if len(seen) == 0 {
-		report("SessionEvents", "FAIL", "no events received in 5s")
+		report("SessionEvents", "FAIL", "no events received in 15s")
 		return
 	}
 	report("SessionEvents", "PASS", fmt.Sprintf("first %d types: %v", len(seen), seen))
 }
 
 // testRun 用 GlobalEventStream + Run 跑一轮对话，断言首事件是 Prompt 且最后是终止事件。
-func testRun(ctx context.Context, c *oc.Client, existingSession string, report func(string, string, string)) {
+func testRun(ctx context.Context, c *oc.Client, _ string, report func(string, string, string)) {
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
 
-	stream, err := c.NewGlobalEventStream(runCtx)
+	stream, err := c.NewGlobalEventStream(runCtx, nil)
 	if err != nil {
 		report("GlobalEventStream", "FAIL", err.Error())
 		return
@@ -243,8 +263,9 @@ func testRun(ctx context.Context, c *oc.Client, existingSession string, report f
 	defer func() { _ = stream.Close() }()
 
 	out, err := c.Run(runCtx, stream, oc.RunOptions{
-		Prompt:    "请只回复两个字：可以",
-		SessionID: existingSession, // 复用，便于观察
+		Prompt: "请只回复两个字：可以",
+		// 不指定 SessionID/Model：内部新建默认会话，使用服务端默认模型
+		//（selectedModel 的 provider 可能无凭证，会触发 session.error）
 	})
 	if err != nil {
 		report("Run", "FAIL", "Run: "+err.Error())
