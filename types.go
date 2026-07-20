@@ -167,15 +167,19 @@ type ModelAPI struct {
 	Model string `json:"model"`
 }
 
+// ModelCapabilities 描述模型能力。
+// spec 声明了 reasoning/vision/audio 等布尔字段，但实测服务端只发 input/output(数组)+tools(布尔)。
+// 保留 spec 全部字段以兼容未来；input/output 按实测用 []string。
 type ModelCapabilities struct {
-	Reasoning   bool `json:"reasoning"`
-	Tools       bool `json:"tools"`
-	Vision      bool `json:"vision"`
-	Audio       bool `json:"audio"`
-	Output      bool `json:"output,omitempty"`
-	SystemRole  bool `json:"systemRole,omitempty"`
-	Attachments bool `json:"attachments,omitempty"`
-	Batch       bool `json:"batch,omitempty"`
+	Reasoning   bool     `json:"reasoning,omitempty"`
+	Tools       bool     `json:"tools"`
+	Vision      bool     `json:"vision,omitempty"`
+	Audio       bool     `json:"audio,omitempty"`
+	Input       []string `json:"input,omitempty"`
+	Output      []string `json:"output,omitempty"`
+	SystemRole  bool     `json:"systemRole,omitempty"`
+	Attachments bool     `json:"attachments,omitempty"`
+	Batch       bool     `json:"batch,omitempty"`
 }
 
 type ModelTime struct {

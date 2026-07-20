@@ -30,7 +30,7 @@ func TestListModels(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"location":{"directory":"/repo"},"data":[
 			{"id":"claude-sonnet","providerID":"anthropic","name":"Sonnet","api":{"model":"x"},
-			 "capabilities":{"reasoning":true,"tools":true,"vision":false,"audio":false},
+			 "capabilities":{"tools":true,"input":["text"],"output":["text"]},
 			 "request":{"headers":{},"body":{}},"variants":[],"time":{"released":1},
 			 "cost":[],"status":"active","enabled":true,"limit":{"context":200000,"output":8192}}
 		]}`))
@@ -45,8 +45,11 @@ func TestListModels(t *testing.T) {
 	if len(ms) != 1 || ms[0].ID != "claude-sonnet" {
 		t.Fatalf("models = %+v", ms)
 	}
-	if !ms[0].Capabilities.Reasoning || ms[0].Limit.Context != 200000 {
+	if !ms[0].Capabilities.Tools || ms[0].Limit.Context != 200000 {
 		t.Errorf("model = %+v", ms[0])
+	}
+	if len(ms[0].Capabilities.Output) != 1 || ms[0].Capabilities.Output[0] != "text" {
+		t.Errorf("output caps = %v", ms[0].Capabilities.Output)
 	}
 }
 
