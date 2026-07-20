@@ -16,7 +16,7 @@ func TestListAgents(t *testing.T) {
 			t.Errorf("directory = %q", got)
 		}
 		_, _ = w.Write([]byte(`[
-			{"name":"build","mode":"primary","hidden":false,"permission":[]},
+			{"name":"build","mode":"primary","hidden":false,"permission":[],"model":{"providerID":"anthropic","modelID":"claude-sonnet"}},
 			{"name":"explore","mode":"subagent","hidden":false,"permission":["read"]}
 		]`))
 	}))
@@ -39,5 +39,12 @@ func TestListAgents(t *testing.T) {
 	// RawMessage 字段应原样保留
 	if len(agents[0].Permission) == 0 {
 		t.Errorf("permission empty")
+	}
+	// wire 的 modelID 键名归一到 ModelRef.ID
+	if agents[0].Model == nil || agents[0].Model.ID != "claude-sonnet" || agents[0].Model.ProviderID != "anthropic" {
+		t.Errorf("model = %+v", agents[0].Model)
+	}
+	if agents[1].Model != nil {
+		t.Errorf("model should be nil: %+v", agents[1].Model)
 	}
 }

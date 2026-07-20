@@ -42,8 +42,8 @@ func GeneratePartID() (string, error) {
 	return generateIDAt(prtPrefix, time.Now().UnixMilli())
 }
 
-// GenerateMessageIDAt 用指定毫秒时间戳生成 message id，便于测试。
-func GenerateMessageIDAt(ms int64) (string, error) {
+// generateMessageIDAt 用指定毫秒时间戳生成 message id，便于测试。
+func generateMessageIDAt(ms int64) (string, error) {
 	return generateIDAt(msgPrefix, ms)
 }
 

@@ -22,8 +22,8 @@ func locationQuery(loc *LocationRef) url.Values {
 }
 
 // listProviders 拉取 GET /provider 的原始响应，供 List*/Get* 复用。
-func (c *Client) listProviders(ctx context.Context, loc *LocationRef) (*ProvidersResponse, error) {
-	var out ProvidersResponse
+func (c *Client) listProviders(ctx context.Context, loc *LocationRef) (*providersResponse, error) {
+	var out providersResponse
 	if err := c.doJSON(ctx, http_GET, "/provider", locationQuery(loc), nil, &out, 0); err != nil {
 		return nil, err
 	}

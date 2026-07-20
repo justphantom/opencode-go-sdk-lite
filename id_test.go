@@ -7,7 +7,7 @@ import (
 )
 
 func TestGenerateMessageID_Format(t *testing.T) {
-	id, err := GenerateMessageIDAt(1_700_000_000_000)
+	id, err := generateMessageIDAt(1_700_000_000_000)
 	if err != nil {
 		t.Fatalf("GenerateMessageIDAt: %v", err)
 	}
@@ -28,8 +28,8 @@ func TestGenerateMessageID_Format(t *testing.T) {
 }
 
 func TestGenerateMessageID_MonotonicSameMs(t *testing.T) {
-	id1, _ := GenerateMessageIDAt(1_000)
-	id2, _ := GenerateMessageIDAt(1_000)
+	id1, _ := generateMessageIDAt(1_000)
+	id2, _ := generateMessageIDAt(1_000)
 	// 同毫秒内 counter 递增，hex 段（前 12 hex 字符）非递减
 	if id1[4:16] > id2[4:16] {
 		t.Errorf("same-ms not monotonic: hex1=%q > hex2=%q", id1[4:16], id2[4:16])
@@ -38,8 +38,8 @@ func TestGenerateMessageID_MonotonicSameMs(t *testing.T) {
 
 func TestGenerateMessageID_RollbackStillIncreasing(t *testing.T) {
 	// 先在 ms=1000 生成，再退回 ms=999，hex 段应钳制为非递减
-	id1, _ := GenerateMessageIDAt(1_000)
-	id2, _ := GenerateMessageIDAt(999)
+	id1, _ := generateMessageIDAt(1_000)
+	id2, _ := generateMessageIDAt(999)
 	if id2[4:16] < id1[4:16] {
 		t.Errorf("rollback broke monotonicity: hex1=%q > hex2=%q", id1[4:16], id2[4:16])
 	}
@@ -89,9 +89,9 @@ func TestGeneratePartID_Format(t *testing.T) {
 
 // 官方实现中所有前缀共用同一单调状态：交叉生成 msg/prt 仍须非递减。
 func TestGenerateID_SharedMonotonicState(t *testing.T) {
-	m1, _ := GenerateMessageIDAt(5_000)
+	m1, _ := generateMessageIDAt(5_000)
 	p1, _ := GeneratePartID()
-	m2, _ := GenerateMessageIDAt(5_000)
+	m2, _ := generateMessageIDAt(5_000)
 	if p1[4:16] < m1[4:16] {
 		t.Errorf("prt hex %q < msg hex %q", p1[4:16], m1[4:16])
 	}

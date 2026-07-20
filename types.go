@@ -25,6 +25,11 @@ type PromptModelRef struct {
 	ModelID    string `json:"modelID"`
 }
 
+// toModelRef 把 wire 的 modelID 键名归一到 ModelRef.ID。
+func (w PromptModelRef) toModelRef() *ModelRef {
+	return &ModelRef{ID: w.ModelID, ProviderID: w.ProviderID}
+}
+
 // ============ Prompt ============
 
 // PromptPart 是 prompt_async parts 的元素；当前仅覆盖 text，其余类型用 Raw 透传。
@@ -137,12 +142,16 @@ type SessionMessage struct {
 	Parts []json.RawMessage `json:"parts"`
 }
 
-// MessageInfo 是 User/Assistant 消息的公共字段；更多字段请从 Parts 或重取。
+// MessageInfo 是 User/Assistant 消息的公共字段（assistant 专有字段在 user 消息上为零值）。
+// 更多字段（parts 之外的）请按 role 自行反序列化 Parts。
 type MessageInfo struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionID"`
-	Role      string `json:"role"`
-	Agent     string `json:"agent,omitempty"`
+	ID        string        `json:"id"`
+	SessionID string        `json:"sessionID"`
+	Role      string        `json:"role"`
+	Agent     string        `json:"agent,omitempty"`
+	Finish    string        `json:"finish,omitempty"`
+	Cost      float64       `json:"cost,omitempty"`
+	Tokens    SessionTokens `json:"tokens,omitempty"`
 }
 
 // ============ Model / Provider ============
@@ -203,8 +212,8 @@ type ProviderInfo struct {
 	Models  map[string]ModelInfo `json:"models,omitempty"`
 }
 
-// ProvidersResponse 是 GET /provider 的响应。
-type ProvidersResponse struct {
+// providersResponse 是 GET /provider 的响应（listProviders 的中间结构）。
+type providersResponse struct {
 	All       []ProviderInfo    `json:"all"`
 	Default   map[string]string `json:"default,omitempty"`
 	Connected []string          `json:"connected,omitempty"`
@@ -213,6 +222,7 @@ type ProvidersResponse struct {
 // ============ Agent ============
 
 // AgentInfo 对应 V1 Agent schema；permission/options 保留 RawMessage 透传。
+// Model 已从 wire 的 modelID 键名归一到 ModelRef。
 type AgentInfo struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
@@ -221,11 +231,28 @@ type AgentInfo struct {
 	Hidden      bool            `json:"hidden"`
 	Color       string          `json:"color,omitempty"`
 	Steps       int             `json:"steps,omitempty"`
-	Model       *PromptModelRef `json:"model,omitempty"`
+	Model       *ModelRef       `json:"-"`
 	Variant     string          `json:"variant,omitempty"`
 	Prompt      string          `json:"prompt,omitempty"`
 	Permission  json.RawMessage `json:"permission,omitempty"`
 	Options     json.RawMessage `json:"options,omitempty"`
+}
+
+// UnmarshalJSON 把 wire 的 model.{providerID,modelID} 归一到 ModelRef。
+func (a *AgentInfo) UnmarshalJSON(data []byte) error {
+	type alias AgentInfo
+	var raw struct {
+		alias
+		Model *PromptModelRef `json:"model"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*a = AgentInfo(raw.alias)
+	if raw.Model != nil {
+		a.Model = raw.Model.toModelRef()
+	}
+	return nil
 }
 
 // ============ Permission / Question ============
@@ -288,17 +315,9 @@ const (
 
 // Event 是 SSE 推送的一条事件；Data 保留为原始 JSON，由调用方按 Type 反序列化。
 type Event struct {
-	ID      string          `json:"id"`
-	Type    string          `json:"type"`
-	Data    json.RawMessage `json:"data,omitempty"`
-	Durable *Durable        `json:"durable,omitempty"`
-}
-
-// Durable 出现在 session-scoped 事件上，Seq 用于断线重连的 after 游标与去重。
-type Durable struct {
-	AggregateID string `json:"aggregateID"`
-	Seq         int64  `json:"seq"`
-	Version     int64  `json:"version"`
+	ID   string          `json:"id"`
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 // Event Type 常量。完整覆盖 spec 中 88 种事件字符串。
@@ -323,8 +342,6 @@ const (
 	EventModelsDevRefreshed         = "models-dev.refreshed"
 	EventPermissionAsked            = "permission.asked"
 	EventPermissionReplied          = "permission.replied"
-	EventPermissionV2Asked          = "permission.v2.asked"
-	EventPermissionV2Replied        = "permission.v2.replied"
 	EventPluginAdded                = "plugin.added"
 	EventProjectDirectoriesUpdated  = "project.directories.updated"
 	EventProjectUpdated             = "project.updated"
@@ -335,9 +352,6 @@ const (
 	EventQuestionAsked              = "question.asked"
 	EventQuestionRejected           = "question.rejected"
 	EventQuestionReplied            = "question.replied"
-	EventQuestionV2Asked            = "question.v2.asked"
-	EventQuestionV2Rejected         = "question.v2.rejected"
-	EventQuestionV2Replied          = "question.v2.replied"
 	EventReferenceUpdated           = "reference.updated"
 	EventServerConnected            = "server.connected"
 	EventSessionCompacted           = "session.compacted"
