@@ -11,7 +11,7 @@ opencode v2 HTTP API 的轻量 Go SDK，纯标准库实现。
 ## 安装
 
 ```
-go get github.com/opencode-ai/opencode-go-sdk-lite
+go get github.com/justphantom/opencode-go-sdk-lite
 ```
 
 ## 接口清单
@@ -95,7 +95,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	oc "github.com/opencode-ai/opencode-go-sdk-lite"
+	oc "github.com/justphantom/opencode-go-sdk-lite"
 )
 
 func main() {

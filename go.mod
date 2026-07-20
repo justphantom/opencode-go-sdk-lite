@@ -1,3 +1,3 @@
-module github.com/opencode-ai/opencode-go-sdk-lite
+module github.com/justphantom/opencode-go-sdk-lite
 
 go 1.22
