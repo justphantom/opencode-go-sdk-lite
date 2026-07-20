@@ -197,6 +197,22 @@ type ProviderV2Info struct {
 	Request       json.RawMessage `json:"request"`
 }
 
+// ============ Agent ============
+
+// AgentV2Info 描述一个 agent；request 与 permissions 结构复杂，保留 RawMessage 透传。
+type AgentV2Info struct {
+	ID          string          `json:"id"`
+	Model       *ModelRef       `json:"model,omitempty"`
+	Request     json.RawMessage `json:"request"`
+	System      string          `json:"system,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Mode        string          `json:"mode"` // subagent | primary | all
+	Hidden      bool            `json:"hidden"`
+	Color       string          `json:"color,omitempty"`
+	Steps       int             `json:"steps,omitempty"`
+	Permissions json.RawMessage `json:"permissions"`
+}
+
 // ============ Permission / Question ============
 
 type QuestionV2Request struct {
