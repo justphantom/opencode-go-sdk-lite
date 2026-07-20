@@ -4,18 +4,16 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
-// ListSessionsOpt 是 GET /api/session 的查询参数。
+// ListSessionsOpt 是 GET /session 的查询参数。
 type ListSessionsOpt struct {
-	Workspace string
-	Limit     int
-	Order     string // asc | desc
-	Search    string
 	Directory string
-	Project   string
-	Subpath   string
-	Cursor    string
+	Workspace string
+	Scope     string
+	Search    string
+	Limit     int
 }
 
 func (o *ListSessionsOpt) toQuery() url.Values {
@@ -23,98 +21,132 @@ func (o *ListSessionsOpt) toQuery() url.Values {
 	if o == nil {
 		return q
 	}
+	if o.Directory != "" {
+		q.Set("directory", o.Directory)
+	}
 	if o.Workspace != "" {
 		q.Set("workspace", o.Workspace)
 	}
-	if o.Limit > 0 {
-		q.Set("limit", fmt.Sprintf("%d", o.Limit))
-	}
-	if o.Order != "" {
-		q.Set("order", o.Order)
+	if o.Scope != "" {
+		q.Set("scope", o.Scope)
 	}
 	if o.Search != "" {
 		q.Set("search", o.Search)
 	}
-	if o.Directory != "" {
-		q.Set("directory", o.Directory)
-	}
-	if o.Project != "" {
-		q.Set("project", o.Project)
-	}
-	if o.Subpath != "" {
-		q.Set("subpath", o.Subpath)
-	}
-	if o.Cursor != "" {
-		q.Set("cursor", o.Cursor)
+	if o.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", o.Limit))
 	}
 	return q
 }
 
-// ListSessions 分页列出 session。
-func (c *Client) ListSessions(ctx context.Context, opt *ListSessionsOpt) (*SessionsResponse, error) {
-	var wrapped struct {
-		Data   []SessionV2Info `json:"data"`
-		Cursor *Cursor         `json:"cursor"`
-	}
-	if err := c.doJSON(ctx, http_GET, "/api/session", opt.toQuery(), nil, &wrapped, 0); err != nil {
+// ListSessions 列出 session。V1 无游标分页，一次返回全部（可用 Limit 截断）。
+func (c *Client) ListSessions(ctx context.Context, opt *ListSessionsOpt) ([]SessionInfo, error) {
+	var out []SessionInfo
+	if err := c.doJSON(ctx, http_GET, "/session", opt.toQuery(), nil, &out, 0); err != nil {
 		return nil, err
 	}
-	return &SessionsResponse{Data: wrapped.Data, Cursor: wrapped.Cursor}, nil
+	return out, nil
 }
 
 // CreateSession 创建会话。req 留空时由服务端生成 id 并用默认 agent/model。
-func (c *Client) CreateSession(ctx context.Context, req *CreateSessionReq) (*SessionV2Info, error) {
+func (c *Client) CreateSession(ctx context.Context, req *CreateSessionReq) (*SessionInfo, error) {
 	if req == nil {
 		req = &CreateSessionReq{}
 	}
-	var wrapped struct {
-		Data SessionV2Info `json:"data"`
+	q := url.Values{}
+	if req.Directory != "" {
+		q.Set("directory", req.Directory)
 	}
-	if err := c.doJSON(ctx, http_POST, "/api/session", nil, req, &wrapped, 0); err != nil {
+	var out SessionInfo
+	if err := c.doJSON(ctx, http_POST, "/session", q, req, &out, 0); err != nil {
 		return nil, err
 	}
-	return &wrapped.Data, nil
+	return &out, nil
 }
 
 // GetSession 返回单个会话详情。
-func (c *Client) GetSession(ctx context.Context, sessionID string) (*SessionV2Info, error) {
-	var wrapped struct {
-		Data SessionV2Info `json:"data"`
-	}
-	if err := c.doJSON(ctx, http_GET, "/api/session/"+sessionID, nil, nil, &wrapped, 0); err != nil {
+func (c *Client) GetSession(ctx context.Context, sessionID string) (*SessionInfo, error) {
+	var out SessionInfo
+	if err := c.doJSON(ctx, http_GET, "/session/"+sessionID, nil, nil, &out, 0); err != nil {
 		return nil, err
 	}
-	return &wrapped.Data, nil
+	return &out, nil
 }
 
-// Prompt 异步入队一条消息并调度 agent-loop。
-// 返回入队确认（SessionInputAdmitted，含 messageID/admittedSeq），
-// 模型推理在服务端异步进行，结果通过 SSE 流（SessionEvents 或 GlobalEventStream）推送。
-// 本方法不会阻塞等待回复——spec 描述为 "durably admit one session input and schedule
-// agent-loop execution"，实测约 100ms 内返回。
-func (c *Client) Prompt(ctx context.Context, sessionID string, req *PromptReq) (*SessionInputAdmitted, error) {
+// Prompt 异步发送一条消息并调度 agent-loop（POST /session/{id}/prompt_async）。
+// 服务端返 204 无 body：没有 admitted 确认，messageID/partID 由 SDK 生成
+// （调用方显式传入且前缀合法时尊重原值），经 PromptAck 回传，
+// 用于关联后续 SSE 事件。agent/model 随本条消息生效（V1 无独立的 Switch 接口）。
+func (c *Client) Prompt(ctx context.Context, sessionID string, req *PromptReq) (*PromptAck, error) {
 	if req == nil {
 		return nil, fmt.Errorf("opencode: prompt request is nil")
 	}
-	if req.Prompt.Text == "" {
-		return nil, fmt.Errorf("opencode: prompt.text is required")
+	if len(req.Parts) == 0 {
+		return nil, fmt.Errorf("opencode: prompt.parts is required")
 	}
-	var wrapped struct {
-		Data SessionInputAdmitted `json:"data"`
+
+	ack := &PromptAck{MessageID: req.MessageID, PartIDs: make([]string, len(req.Parts))}
+	if ack.MessageID == "" {
+		id, err := GenerateMessageID()
+		if err != nil {
+			return nil, err
+		}
+		ack.MessageID = id
+	} else if !strings.HasPrefix(ack.MessageID, msgPrefix) {
+		return nil, fmt.Errorf("opencode: messageID %q must start with %q", ack.MessageID, msgPrefix)
 	}
-	if err := c.doJSON(ctx, http_POST, "/api/session/"+sessionID+"/prompt", nil, req, &wrapped, 0); err != nil {
+
+	parts := make([]PromptPart, len(req.Parts))
+	for i, p := range req.Parts {
+		if p.ID == "" {
+			id, err := GeneratePartID()
+			if err != nil {
+				return nil, err
+			}
+			p.ID = id
+		} else if !strings.HasPrefix(p.ID, prtPrefix) {
+			return nil, fmt.Errorf("opencode: part id %q must start with %q", p.ID, prtPrefix)
+		}
+		parts[i] = p
+		ack.PartIDs[i] = p.ID
+	}
+
+	// wire body：model 键为 modelID（与 ModelRef.ID 不同名），在此转换
+	body := struct {
+		MessageID string          `json:"messageID,omitempty"`
+		Model     *PromptModelRef `json:"model,omitempty"`
+		Agent     string          `json:"agent,omitempty"`
+		NoReply   bool            `json:"noReply,omitempty"`
+		System    string          `json:"system,omitempty"`
+		Variant   string          `json:"variant,omitempty"`
+		Parts     []PromptPart    `json:"parts"`
+	}{
+		MessageID: ack.MessageID,
+		Agent:     req.Agent,
+		NoReply:   req.NoReply,
+		System:    req.System,
+		Variant:   req.Variant,
+		Parts:     parts,
+	}
+	if req.Model != nil {
+		body.Model = &PromptModelRef{ProviderID: req.Model.ProviderID, ModelID: req.Model.ID}
+		if body.Variant == "" {
+			body.Variant = req.Model.Variant
+		}
+	}
+
+	if err := c.doEmpty(ctx, http_POST, "/session/"+sessionID+"/prompt_async", nil, body, 204); err != nil {
 		return nil, err
 	}
-	return &wrapped.Data, nil
+	return ack, nil
 }
 
-// Interrupt 中断当前 agent-loop。空闲时为 no-op。
+// Interrupt 中断当前 agent-loop（POST /session/{id}/abort）。空闲时为 no-op。
 func (c *Client) Interrupt(ctx context.Context, sessionID string) error {
-	return c.doEmpty(ctx, http_POST, "/api/session/"+sessionID+"/interrupt", nil, nil, 204)
+	return c.doEmpty(ctx, http_POST, "/session/"+sessionID+"/abort", nil, nil, 200)
 }
 
-// DeleteSession 删除会话。v2 spec 未提供删除端点，实际由 v1 端点 DELETE /session/{id} 承担
-// （实测：返 200 + body true，删后 GET /api/session/{id} 返 404）。这是 v2 与 v1 共存的官方行为。
+// DeleteSession 删除会话。
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	var ok bool
 	if err := c.doJSON(ctx, http_DELETE, "/session/"+sessionID, nil, nil, &ok, 0); err != nil {
@@ -126,27 +158,12 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// SwitchAgent 切换后续 provider turn 的 agent。
-func (c *Client) SwitchAgent(ctx context.Context, sessionID, agent string) error {
-	body := map[string]string{"agent": agent}
-	return c.doEmpty(ctx, http_POST, "/api/session/"+sessionID+"/agent", nil, body, 204)
-}
-
-// SwitchModel 切换后续 provider turn 的 model。
-// 服务端期望 body 为 {"model": ModelRef}（实测：直接 POST ModelRef
-// 会返 400 "Missing key at [\"model\"]"，见 session_test.go）。
-func (c *Client) SwitchModel(ctx context.Context, sessionID string, m ModelRef) error {
-	body := struct {
-		Model ModelRef `json:"model"`
-	}{Model: m}
-	return c.doEmpty(ctx, http_POST, "/api/session/"+sessionID+"/model", nil, body, 204)
-}
-
-// ListMessagesOpt 是 GET /api/session/{id}/message 的查询参数。
+// ListMessagesOpt 是 GET /session/{id}/message 的查询参数。
 type ListMessagesOpt struct {
-	Limit  int
-	Order  string
-	Cursor string
+	Directory string
+	Workspace string
+	Limit     int
+	Before    string
 }
 
 func (o *ListMessagesOpt) toQuery() url.Values {
@@ -154,28 +171,28 @@ func (o *ListMessagesOpt) toQuery() url.Values {
 	if o == nil {
 		return q
 	}
+	if o.Directory != "" {
+		q.Set("directory", o.Directory)
+	}
+	if o.Workspace != "" {
+		q.Set("workspace", o.Workspace)
+	}
 	if o.Limit > 0 {
 		q.Set("limit", fmt.Sprintf("%d", o.Limit))
 	}
-	if o.Order != "" {
-		q.Set("order", o.Order)
-	}
-	if o.Cursor != "" {
-		q.Set("cursor", o.Cursor)
+	if o.Before != "" {
+		q.Set("before", o.Before)
 	}
 	return q
 }
 
-// ListMessages 分页列出会话历史消息。
-func (c *Client) ListMessages(ctx context.Context, sessionID string, opt *ListMessagesOpt) (*SessionMessagesResponse, error) {
-	var wrapped struct {
-		Data   []SessionMessage `json:"data"`
-		Cursor *Cursor          `json:"cursor"`
-	}
-	if err := c.doJSON(ctx, http_GET, "/api/session/"+sessionID+"/message", opt.toQuery(), nil, &wrapped, 0); err != nil {
+// ListMessages 列出会话历史消息（info + parts）。
+func (c *Client) ListMessages(ctx context.Context, sessionID string, opt *ListMessagesOpt) ([]SessionMessage, error) {
+	var out []SessionMessage
+	if err := c.doJSON(ctx, http_GET, "/session/"+sessionID+"/message", opt.toQuery(), nil, &out, 0); err != nil {
 		return nil, err
 	}
-	return &SessionMessagesResponse{Data: wrapped.Data, Cursor: wrapped.Cursor}, nil
+	return out, nil
 }
 
 // HTTP 方法常量，避免多处裸字符串。

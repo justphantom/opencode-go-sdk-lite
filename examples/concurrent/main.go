@@ -80,7 +80,7 @@ func main() {
 // runOne 走低层路径：CreateSession → Subscribe（拿到底层 Event chan）→ Prompt → 消费。
 // 比 Run 更适合"多路复用"场景：Subscribe 返回的是原始 Event，多 worker 各自处理无干扰。
 func runOne(ctx context.Context, client *oc.Client, stream *oc.GlobalEventStream, loc *oc.LocationRef, prompt string, idx int) error {
-	ses, err := client.CreateSession(ctx, &oc.CreateSessionReq{Location: loc})
+	ses, err := client.CreateSession(ctx, &oc.CreateSessionReq{Directory: loc.Directory, WorkspaceID: loc.WorkspaceID})
 	if err != nil {
 		return fmt.Errorf("CreateSession: %w", err)
 	}
@@ -90,13 +90,13 @@ func runOne(ctx context.Context, client *oc.Client, stream *oc.GlobalEventStream
 	ch := stream.Subscribe(ses.ID)
 	defer stream.Unsubscribe(ses.ID)
 
-	admitted, err := client.Prompt(ctx, ses.ID, &oc.PromptReq{
-		Prompt: oc.PromptInput{Text: fmt.Sprintf("[%d] %s", idx, prompt)},
+	ack, err := client.Prompt(ctx, ses.ID, &oc.PromptReq{
+		Parts: []oc.PromptPart{{Type: "text", Text: fmt.Sprintf("[%d] %s", idx, prompt)}},
 	})
 	if err != nil {
 		return fmt.Errorf("prompt: %w", err)
 	}
-	fmt.Printf("[worker %d] session=%s msg=%s\n", idx, ses.ID, admitted.ID)
+	fmt.Printf("[worker %d] session=%s msg=%s\n", idx, ses.ID, ack.MessageID)
 
 	var sb strings.Builder
 	for ev := range ch {

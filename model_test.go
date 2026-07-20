@@ -9,10 +9,10 @@ import (
 
 func TestLocationQuery(t *testing.T) {
 	q := locationQuery(&LocationRef{Directory: "/a", WorkspaceID: "wrk_1"})
-	if got := q.Get("location[directory]"); got != "/a" {
+	if got := q.Get("directory"); got != "/a" {
 		t.Errorf("directory = %q", got)
 	}
-	if got := q.Get("location[workspace]"); got != "wrk_1" {
+	if got := q.Get("workspace"); got != "wrk_1" {
 		t.Errorf("workspace = %q", got)
 	}
 	if q2 := locationQuery(nil); len(q2) != 0 {
@@ -20,20 +20,36 @@ func TestLocationQuery(t *testing.T) {
 	}
 }
 
+// providersFixture 是 GET /provider 的标准响应：两个 provider，三个模型。
+const providersFixture = `{"all":[
+	{"id":"anthropic","name":"Anthropic","source":"api","models":{
+		"claude-sonnet":{"id":"claude-sonnet","providerID":"anthropic","name":"Sonnet",
+			"api":{"id":"x","url":"u","npm":"n"},
+			"capabilities":{"tools":true,"input":["text"],"output":["text"]},
+			"cost":{"input":3,"output":15,"cache":{"read":0.3,"write":3.75}},
+			"limit":{"context":200000,"output":8192},"status":"active"},
+		"claude-old":{"id":"claude-old","providerID":"anthropic","name":"Old",
+			"api":{"id":"y","url":"u","npm":"n"},"capabilities":{"tools":false},
+			"cost":{"input":1,"output":2,"cache":{"read":0,"write":0}},
+			"limit":{"context":100000,"output":4096},"status":"deprecated"}
+	}},
+	{"id":"opencode","name":"O","source":"api","models":{
+		"free":{"id":"free","providerID":"opencode","name":"F",
+			"api":{"id":"z","url":"u","npm":"n"},"capabilities":{"tools":true},
+			"cost":{"input":0,"output":0,"cache":{"read":0,"write":0}},
+			"limit":{"context":32000,"output":4096},"status":"active"}
+	}}
+],"default":{"anthropic":"claude-sonnet"},"connected":["anthropic"]}`
+
 func TestListModels(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/model" || r.Method != "GET" {
+		if r.URL.Path != "/provider" || r.Method != "GET" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-		if got := r.URL.Query().Get("location[directory]"); got != "/repo" {
+		if got := r.URL.Query().Get("directory"); got != "/repo" {
 			t.Errorf("directory query = %q", got)
 		}
-		_, _ = w.Write([]byte(`{"location":{"directory":"/repo"},"data":[
-			{"id":"claude-sonnet","providerID":"anthropic","name":"Sonnet","api":{"model":"x"},
-			 "capabilities":{"tools":true,"input":["text"],"output":["text"]},
-			 "request":{"headers":{},"body":{}},"variants":[],"time":{"released":1},
-			 "cost":[],"status":"active","enabled":true,"limit":{"context":200000,"output":8192}}
-		]}`))
+		_, _ = w.Write([]byte(providersFixture))
 	}))
 	defer srv.Close()
 
@@ -42,23 +58,31 @@ func TestListModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	if len(ms) != 1 || ms[0].ID != "claude-sonnet" {
+	if len(ms) != 3 {
 		t.Fatalf("models = %+v", ms)
 	}
-	if !ms[0].Capabilities.Tools || ms[0].Limit.Context != 200000 {
-		t.Errorf("model = %+v", ms[0])
+	byID := map[string]ModelInfo{}
+	for _, m := range ms {
+		byID[m.ProviderID+"/"+m.ID] = m
 	}
-	if len(ms[0].Capabilities.Output) != 1 || ms[0].Capabilities.Output[0] != "text" {
-		t.Errorf("output caps = %v", ms[0].Capabilities.Output)
+	sonnet, ok := byID["anthropic/claude-sonnet"]
+	if !ok {
+		t.Fatalf("missing anthropic/claude-sonnet in %v", byID)
+	}
+	if !sonnet.Enabled || !sonnet.Capabilities.Tools || sonnet.Limit.Context != 200000 {
+		t.Errorf("sonnet = %+v", sonnet)
+	}
+	if old := byID["anthropic/claude-old"]; old.Enabled || old.Status != "deprecated" {
+		t.Errorf("old = %+v", old)
 	}
 }
 
 func TestListProviders(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/provider" {
+		if r.URL.Path != "/provider" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"data":[{"id":"anthropic","name":"Anthropic","api":{},"request":{}}]}`))
+		_, _ = w.Write([]byte(providersFixture))
 	}))
 	defer srv.Close()
 
@@ -67,33 +91,39 @@ func TestListProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListProviders: %v", err)
 	}
-	if len(ps) != 1 || ps[0].ID != "anthropic" {
+	if len(ps) != 2 || ps[0].ID != "anthropic" {
 		t.Errorf("providers = %+v", ps)
+	}
+	if len(ps[0].Models) != 2 {
+		t.Errorf("models = %+v", ps[0].Models)
 	}
 }
 
 func TestGetProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/provider/anthropic" {
+		if r.URL.Path != "/provider" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"data":{"id":"anthropic","name":"Anthropic","api":{},"request":{}}}`))
+		_, _ = w.Write([]byte(providersFixture))
 	}))
 	defer srv.Close()
 
 	c, _ := New(srv.URL)
-	p, err := c.GetProvider(context.Background(), "anthropic", nil)
+	p, err := c.GetProvider(context.Background(), "opencode", nil)
 	if err != nil {
 		t.Fatalf("GetProvider: %v", err)
 	}
-	if p.ID != "anthropic" {
+	if p.ID != "opencode" || len(p.Models) != 1 {
 		t.Errorf("provider = %+v", p)
+	}
+	if _, err := c.GetProvider(context.Background(), "nope", nil); err == nil {
+		t.Fatal("expected error for unknown provider")
 	}
 }
 
 func TestReplyPermission_validates(t *testing.T) {
 	c, _ := New("http://x")
-	if err := c.ReplyPermission(context.Background(), "ses_1", "per_1", "bogus", ""); err == nil {
+	if err := c.ReplyPermission(context.Background(), "per_1", "bogus", ""); err == nil {
 		t.Fatal("expected error for invalid reply")
 	}
 }

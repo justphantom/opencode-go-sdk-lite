@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"time"
 )
 
@@ -17,8 +16,6 @@ const (
 
 // SessionEventsOpt 配置 SessionEvents 订阅。
 type SessionEventsOpt struct {
-	// After 是起始游标，仅订阅 durable.seq > After 的事件；0 表示从最新开始。
-	After int64
 	// BackoffMin / BackoffMax 限制指数退避区间。零值走默认。
 	BackoffMin time.Duration
 	BackoffMax time.Duration
@@ -44,8 +41,9 @@ func (o *SessionEventsOpt) normalize() *SessionEventsOpt {
 }
 
 // SessionEvents 订阅会话级事件流，返回事件 chan 与错误 chan。
-// 内部循环：GET /api/session/{id}/event?after=N → 解析 → 写 chan → 维护 lastSeq →
-// 断线指数退避后用 after=lastSeq 重连；durable.seq <= lastSeq 的事件被去重丢弃。
+// V1 无会话级 SSE 端点，实际连接全局 GET /event 后按 sessionID 过滤；
+// 全局流不支持 after 续传，断连窗口的事件会丢失。
+// 内部循环：连接 → 解析 → 写 chan → 断线指数退避重连。
 // 不可恢复的 HTTP 错误（4xx，除 429）写 errc 后停止。ctx 取消即关闭 chan。
 //
 // 调用方典型用法：
@@ -70,7 +68,6 @@ func (c *Client) runSessionEvents(ctx context.Context, sessionID string, opt *Se
 	defer close(events)
 	defer close(errc)
 
-	lastSeq := opt.After
 	var attempt int
 	for {
 		if err := ctx.Err(); err != nil {
@@ -78,7 +75,7 @@ func (c *Client) runSessionEvents(ctx context.Context, sessionID string, opt *Se
 			return
 		}
 
-		resp, err := c.connectStream(ctx, sessionID, lastSeq)
+		resp, err := c.connectStream(ctx)
 		if err != nil {
 			// ctx 取消属于正常退出
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -106,7 +103,7 @@ func (c *Client) runSessionEvents(ctx context.Context, sessionID string, opt *Se
 
 		// 连接成功，重置 attempt
 		attempt = 0
-		streamErr := c.pumpStream(ctx, resp, events, &lastSeq)
+		streamErr := c.pumpStream(ctx, resp, sessionID, events)
 		_ = resp.Body.Close()
 
 		if streamErr != nil {
@@ -132,12 +129,8 @@ func (c *Client) runSessionEvents(ctx context.Context, sessionID string, opt *Se
 	}
 }
 
-func (c *Client) connectStream(ctx context.Context, sessionID string, after int64) (*http.Response, error) {
-	q := url.Values{}
-	if after > 0 {
-		q.Set("after", fmt.Sprintf("%d", after))
-	}
-	req, err := c.newRequest(ctx, http_GET, "/api/session/"+sessionID+"/event", q, nil)
+func (c *Client) connectStream(ctx context.Context) (*http.Response, error) {
+	req, err := c.newRequest(ctx, http_GET, "/event", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -155,9 +148,8 @@ func (c *Client) connectStream(ctx context.Context, sessionID string, after int6
 	return resp, nil
 }
 
-// pumpStream 阻塞读取 SSE 流直到结束或 ctx 取消。
-// lastSeq 由 durable.seq 推进；同一 seq 的重复事件被去重。
-func (c *Client) pumpStream(ctx context.Context, resp *http.Response, events chan<- Event, lastSeq *int64) error {
+// pumpStream 阻塞读取 SSE 流直到结束或 ctx 取消，仅透传属于 sessionID 的事件。
+func (c *Client) pumpStream(ctx context.Context, resp *http.Response, sessionID string, events chan<- Event) error {
 	sc := newSSEScanner(resp.Body)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -175,11 +167,8 @@ func (c *Client) pumpStream(ctx context.Context, resp *http.Response, events cha
 		if ev.Type == "" {
 			continue
 		}
-		if ev.Durable != nil {
-			if ev.Durable.Seq <= *lastSeq {
-				continue // 去重
-			}
-			*lastSeq = ev.Durable.Seq
+		if extractSessionID(ev) != sessionID {
+			continue // 全局事件或其他会话的事件
 		}
 		select {
 		case <-ctx.Done():

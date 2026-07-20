@@ -1,5 +1,5 @@
 // Command session-crud 串起 session 管理面：Create → List → Get →
-// SwitchModel → ListMessages → Delete，演示一次完整生命周期。
+// ListMessages → Delete，演示一次完整生命周期。
 //
 // 用法：
 //
@@ -48,7 +48,7 @@ func main() {
 	loc := &oc.LocationRef{Directory: absDir(*dir)}
 
 	// 1. Create
-	ses, err := client.CreateSession(ctx, &oc.CreateSessionReq{Location: loc})
+	ses, err := client.CreateSession(ctx, &oc.CreateSessionReq{Directory: loc.Directory, WorkspaceID: loc.WorkspaceID})
 	must("CreateSession", err)
 	fmt.Printf("[create] id=%s agent=%s\n", ses.ID, ses.Agent)
 	defer func() {
@@ -56,15 +56,13 @@ func main() {
 		fmt.Printf("[delete] id=%s removed\n", ses.ID)
 	}()
 
-	// 2. List（演示分页，limit=5）
+	// 2. List（演示截断，limit=5）
 	listed, err := client.ListSessions(ctx, &oc.ListSessionsOpt{
 		Directory: loc.Directory,
 		Limit:     5,
-		Order:     "desc",
 	})
 	must("ListSessions", err)
-	fmt.Printf("[list] 返回 %d 条（共可见前 5）；cursor.next=%q\n",
-		len(listed.Data), cursorNext(listed.Cursor))
+	fmt.Printf("[list] 返回 %d 条（上限 5）\n", len(listed))
 
 	// 3. Get
 	got, err := client.GetSession(ctx, ses.ID)
@@ -74,30 +72,20 @@ func main() {
 	}
 	fmt.Printf("[get] id=%s title=%q cost=%.4f\n", got.ID, got.Title, got.Cost)
 
-	// 4. SwitchModel（演示 capability：先 listmodel 拿一个 id）
+	// 4. 列出可用模型与 agent（V1 无 Switch 接口，agent/model 随 Prompt body 指定）
 	if m := pickModel(ctx, client, loc); m != nil {
-		if err := client.SwitchModel(ctx, ses.ID, *m); err != nil {
-			fmt.Printf("[switch-model] skip: %v\n", err)
-		} else {
-			fmt.Printf("[switch-model] → %s/%s\n", m.ProviderID, m.ID)
-		}
+		fmt.Printf("[model] 默认 → %s/%s\n", m.ProviderID, m.ID)
 	}
-
-	// 5. SwitchAgent（如服务端注册了 plan 则切，否则跳过）
 	if a := pickAgent(ctx, client, loc, "plan"); a != "" {
-		if err := client.SwitchAgent(ctx, ses.ID, a); err != nil {
-			fmt.Printf("[switch-agent] skip: %v\n", err)
-		} else {
-			fmt.Printf("[switch-agent] → %s\n", a)
-		}
+		fmt.Printf("[agent] 可用 → %s\n", a)
 	}
 
-	// 6. ListMessages（注意：未发 prompt 时通常为空；prompt 后 eventual consistent）
+	// 5. ListMessages（注意：未发 prompt 时通常为空；prompt 后 eventual consistent）
 	msgs, err := client.ListMessages(ctx, ses.ID, &oc.ListMessagesOpt{Limit: 10})
 	must("ListMessages", err)
-	fmt.Printf("[messages] %d 条（空属正常，prompt 后约 3s 才最终一致）\n", len(msgs.Data))
+	fmt.Printf("[messages] %d 条（空属正常，prompt 后约 3s 才最终一致）\n", len(msgs))
 
-	// 7. Delete 在 defer 里执行
+	// 6. Delete 在 defer 里执行
 }
 
 func pickModel(ctx context.Context, client *oc.Client, loc *oc.LocationRef) *oc.ModelRef {
@@ -114,18 +102,11 @@ func pickAgent(ctx context.Context, client *oc.Client, loc *oc.LocationRef, want
 		return ""
 	}
 	for _, a := range as {
-		if a.ID == want {
-			return a.ID
+		if a.Name == want {
+			return a.Name
 		}
 	}
 	return ""
-}
-
-func cursorNext(c *oc.Cursor) string {
-	if c == nil {
-		return ""
-	}
-	return c.Next
 }
 
 func absDir(d string) string {

@@ -6,39 +6,24 @@ import (
 )
 
 // ListPermissions 列出会话内挂起的权限请求。
-func (c *Client) ListPermissions(ctx context.Context, sessionID string) ([]PermissionV2Request, error) {
-	var wrapped struct {
-		Data []PermissionV2Request `json:"data"`
-	}
-	if err := c.doJSON(ctx, http_GET, "/api/session/"+sessionID+"/permission", nil, nil, &wrapped, 0); err != nil {
+// V1 的 GET /permission 是全局 pending 列表，此处按 sessionID 过滤。
+func (c *Client) ListPermissions(ctx context.Context, sessionID string) ([]PermissionRequest, error) {
+	var all []PermissionRequest
+	if err := c.doJSON(ctx, http_GET, "/permission", nil, nil, &all, 0); err != nil {
 		return nil, err
 	}
-	return wrapped.Data, nil
-}
-
-// CreatePermission 评估并（如需）创建权限请求。
-func (c *Client) CreatePermission(ctx context.Context, sessionID string, req *CreatePermissionReq) (*PermissionV2Created, error) {
-	if req == nil {
-		return nil, fmt.Errorf("opencode: permission request is nil")
+	out := make([]PermissionRequest, 0, len(all))
+	for _, p := range all {
+		if p.SessionID == sessionID {
+			out = append(out, p)
+		}
 	}
-	if req.Action == "" {
-		return nil, fmt.Errorf("opencode: permission.action is required")
-	}
-	if len(req.Resources) == 0 {
-		return nil, fmt.Errorf("opencode: permission.resources is required")
-	}
-	var wrapped struct {
-		Data PermissionV2Created `json:"data"`
-	}
-	if err := c.doJSON(ctx, http_POST, "/api/session/"+sessionID+"/permission", nil, req, &wrapped, 0); err != nil {
-		return nil, err
-	}
-	return &wrapped.Data, nil
+	return out, nil
 }
 
 // ReplyPermission 回复一条挂起的权限请求。
 // reply 取值 once / always / reject；message 可选，附在回复上。
-func (c *Client) ReplyPermission(ctx context.Context, sessionID, requestID, reply, message string) error {
+func (c *Client) ReplyPermission(ctx context.Context, requestID, reply, message string) error {
 	switch reply {
 	case PermissionReplyOnce, PermissionReplyAlways, PermissionReplyReject:
 	default:
@@ -48,5 +33,5 @@ func (c *Client) ReplyPermission(ctx context.Context, sessionID, requestID, repl
 	if message != "" {
 		body["message"] = message
 	}
-	return c.doEmpty(ctx, http_POST, "/api/session/"+sessionID+"/permission/"+requestID+"/reply", nil, body, 204)
+	return c.doEmpty(ctx, http_POST, "/permission/"+requestID+"/reply", nil, body, 200)
 }

@@ -9,16 +9,16 @@ import (
 
 func TestListAgents(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/agent" || r.Method != "GET" {
+		if r.URL.Path != "/agent" || r.Method != "GET" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-		if got := r.URL.Query().Get("location[directory]"); got != "/repo" {
-			t.Errorf("location[directory] = %q", got)
+		if got := r.URL.Query().Get("directory"); got != "/repo" {
+			t.Errorf("directory = %q", got)
 		}
-		_, _ = w.Write([]byte(`{"location":{"directory":"/repo"},"data":[
-			{"id":"build","mode":"primary","hidden":false,"request":{"mode":"primary"},"permissions":[]},
-			{"id":"explore","mode":"subagent","hidden":false,"request":{"mode":"subagent"},"permissions":["read"]}
-		]}`))
+		_, _ = w.Write([]byte(`[
+			{"name":"build","mode":"primary","hidden":false,"permission":[]},
+			{"name":"explore","mode":"subagent","hidden":false,"permission":["read"]}
+		]`))
 	}))
 	defer srv.Close()
 
@@ -30,14 +30,14 @@ func TestListAgents(t *testing.T) {
 	if len(agents) != 2 {
 		t.Fatalf("agents = %+v", agents)
 	}
-	if agents[0].ID != "build" || agents[0].Mode != "primary" || agents[0].Hidden {
+	if agents[0].Name != "build" || agents[0].Mode != "primary" || agents[0].Hidden {
 		t.Errorf("agents[0] = %+v", agents[0])
 	}
-	if agents[1].ID != "explore" || agents[1].Mode != "subagent" {
+	if agents[1].Name != "explore" || agents[1].Mode != "subagent" {
 		t.Errorf("agents[1] = %+v", agents[1])
 	}
 	// RawMessage 字段应原样保留
-	if len(agents[0].Request) == 0 {
-		t.Errorf("request empty")
+	if len(agents[0].Permission) == 0 {
+		t.Errorf("permission empty")
 	}
 }

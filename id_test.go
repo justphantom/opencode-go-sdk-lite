@@ -73,3 +73,29 @@ func TestGenerateMessageID_ConcurrentNoDup(t *testing.T) {
 		t.Errorf("unique count = %d, want %d (collisions)", len(seen), want)
 	}
 }
+
+func TestGeneratePartID_Format(t *testing.T) {
+	id, err := GeneratePartID()
+	if err != nil {
+		t.Fatalf("GeneratePartID: %v", err)
+	}
+	if !strings.HasPrefix(id, "prt_") {
+		t.Errorf("missing prefix: %q", id)
+	}
+	if len(id) != 30 {
+		t.Errorf("len = %d, want 30; id=%q", len(id), id)
+	}
+}
+
+// 官方实现中所有前缀共用同一单调状态：交叉生成 msg/prt 仍须非递减。
+func TestGenerateID_SharedMonotonicState(t *testing.T) {
+	m1, _ := GenerateMessageIDAt(5_000)
+	p1, _ := GeneratePartID()
+	m2, _ := GenerateMessageIDAt(5_000)
+	if p1[4:16] < m1[4:16] {
+		t.Errorf("prt hex %q < msg hex %q", p1[4:16], m1[4:16])
+	}
+	if m2[4:16] < p1[4:16] {
+		t.Errorf("msg hex %q < prt hex %q", m2[4:16], p1[4:16])
+	}
+}

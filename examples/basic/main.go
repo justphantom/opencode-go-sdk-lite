@@ -122,7 +122,7 @@ func absDir(d string) string {
 	return d
 }
 
-func providerOf(models []oc.ModelV2Info, id string) string {
+func providerOf(models []oc.ModelInfo, id string) string {
 	for _, m := range models {
 		if m.ID == id {
 			return m.ProviderID

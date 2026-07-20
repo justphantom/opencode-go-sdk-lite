@@ -48,7 +48,7 @@ func main() {
 	} else {
 		names := make([]string, len(agents))
 		for i, a := range agents {
-			names[i] = a.ID + "(" + a.Mode + ")"
+			names[i] = a.Name + "(" + a.Mode + ")"
 		}
 		report("ListAgents", "PASS", fmt.Sprintf("%d agents: %s", len(agents), strings.Join(names, ", ")))
 	}
@@ -59,7 +59,7 @@ func main() {
 		report("ListModels", "FAIL", err.Error())
 	} else {
 		// 选第一个 enabled 且 active 的模型用于后续 prompt
-		var first *oc.ModelV2Info
+		var first *oc.ModelInfo
 		for i := range models {
 			if models[i].Enabled && models[i].Status == "active" {
 				first = &models[i]
@@ -119,57 +119,43 @@ func main() {
 		report("GetSession", "PASS", "id matches")
 	}
 
-	// 8. Prompt（不传 id，看服务端是否回 messageID）
-	admitted, err := c.Prompt(ctx, ses.ID, &oc.PromptReq{
-		Prompt: PromptInput{Text: "请只回复两个字：你好"},
+	// 8. Prompt（messageID/partID 由 SDK 生成并经 ack 回传）
+	ack, err := c.Prompt(ctx, ses.ID, &oc.PromptReq{
+		Parts: []oc.PromptPart{{Type: "text", Text: "请只回复两个字：你好"}},
 	})
 	if err != nil {
-		report("Prompt(no id)", "FAIL", err.Error())
+		report("Prompt", "FAIL", err.Error())
 	} else {
-		report("Prompt(no id)", "PASS", fmt.Sprintf("admittedSeq=%d id=%s delivery=%s", admitted.AdmittedSeq, admitted.ID, admitted.Delivery))
+		report("Prompt", "PASS", fmt.Sprintf("msg=%s parts=%v", ack.MessageID, ack.PartIDs))
 	}
 
-	// 9. Prompt（传客户端 id，看是否原样回传）
-	clientMID, _ := oc.GenerateMessageID()
-	admitted2, err := c.Prompt(ctx, ses.ID, &oc.PromptReq{
-		ID:     clientMID,
-		Prompt: PromptInput{Text: "请只回复一个字：好"},
-	})
-	if err != nil {
-		report("Prompt(with id)", "FAIL", err.Error())
-	} else if admitted2.ID != clientMID {
-		report("Prompt(with id)", "FAIL", fmt.Sprintf("server did not honor client id: got %q want %q", admitted2.ID, clientMID))
-	} else {
-		report("Prompt(with id)", "PASS", "server honored client id="+admitted2.ID)
-	}
-
-	// 10. ListMessages
+	// 9. ListMessages
 	msgs, err := c.ListMessages(ctx, ses.ID, nil)
 	if err != nil {
 		report("ListMessages", "FAIL", err.Error())
 	} else {
-		types := make([]string, len(msgs.Data))
-		for i, m := range msgs.Data {
-			types[i] = m.Type
+		roles := make([]string, len(msgs))
+		for i, m := range msgs {
+			roles[i] = m.Info.Role
 		}
-		report("ListMessages", "PASS", fmt.Sprintf("%d messages: %v", len(msgs.Data), types))
+		report("ListMessages", "PASS", fmt.Sprintf("%d messages: %v", len(msgs), roles))
 	}
 
-	// 11. SessionEvents (session-scoped SSE with ?after=)
+	// 10. SessionEvents (全局 /event 按 sessionID 过滤)
 	testSessionEvents(ctx, c, ses.ID, report)
 
-	// 12. GlobalEventStream + Run
+	// 11. GlobalEventStream + Run
 	testRun(ctx, c, ses.ID, report)
 
-	// 13. ListSessions
+	// 12. ListSessions
 	all, err := c.ListSessions(ctx, &oc.ListSessionsOpt{Limit: 5})
 	if err != nil {
 		report("ListSessions", "FAIL", err.Error())
 	} else {
-		report("ListSessions", "PASS", fmt.Sprintf("%d sessions (limit=5)", len(all.Data)))
+		report("ListSessions", "PASS", fmt.Sprintf("%d sessions (limit=5)", len(all)))
 	}
 
-	// 14. DeleteSession（最后做，删完前面那些就失效）
+	// 13. DeleteSession（最后做，删完前面那些就失效）
 	// 新建一个专门的来删
 	toDel, _ := c.CreateSession(ctx, &oc.CreateSessionReq{Agent: "build", Model: selectedModel})
 	if err := c.DeleteSession(ctx, toDel.ID); err != nil {
@@ -204,17 +190,11 @@ func main() {
 
 var selectedModel *oc.ModelRef
 
-// PromptInput 本地 alias（避免包名冲突，main 包不能引用 oc.PromptInput 也能，但这里展示用 oc 包）
-// 直接用 oc.PromptInput 即可，下面别名只是为减少代码噪声。
-type PromptInput = oc.PromptInput
-
-// testSessionEvents 用 ?after=<admittedSeq-1> 订阅 session-scoped 流，
-// 应该收到刚发出的 prompt 相关事件。最多等 5 秒。
+// testSessionEvents 订阅会话事件（内部为全局流过滤）。最多等 5 秒。
 func testSessionEvents(ctx context.Context, c *oc.Client, sid string, report func(string, string, string)) {
 	subCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	events, errc := c.SessionEvents(subCtx, sid, &oc.SessionEventsOpt{
-		After:      0, // 从头开始
 		BackoffMin: 200 * time.Millisecond,
 		BackoffMax: 2 * time.Second,
 	})

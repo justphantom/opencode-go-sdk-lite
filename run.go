@@ -20,13 +20,14 @@ const (
 	runAbortTimeout = 5 * time.Second
 )
 
-// Run 执行一轮对话：建/复用 session → 发 prompt → 订阅全局流 →
+// Run 执行一轮对话：建/复用 session → 订阅全局流 → 发 prompt_async →
 // 按 assistantMessageID 过滤 → 合成终止事件 → close chan。
 //
 // 首事件必为 HighEventPrompt（携带 sessionID + user messageID）。
 // channel close 前必有 HighEventResult 或 HighEventError（除非 ctx 取消）。
 //
 // stream 必须是已启动的 GlobalEventStream；Run 会 Subscribe(sessionID) 后 Unsubscribe。
+// Agent/Model 随本条消息生效（V1 无 Switch 接口）。
 func (c *Client) Run(ctx context.Context, stream *GlobalEventStream, opts RunOptions) (<-chan HighEvent, error) {
 	if stream == nil {
 		return nil, fmt.Errorf("opencode: stream is nil")
@@ -37,31 +38,36 @@ func (c *Client) Run(ctx context.Context, stream *GlobalEventStream, opts RunOpt
 
 	sessionID := opts.SessionID
 	if sessionID == "" {
-		ses, err := c.CreateSession(ctx, &CreateSessionReq{
-			Agent:    opts.Agent,
-			Model:    opts.Model,
-			Location: opts.Location,
-		})
+		req := &CreateSessionReq{Agent: opts.Agent, Model: opts.Model}
+		if opts.Location != nil {
+			req.Directory = opts.Location.Directory
+			req.WorkspaceID = opts.Location.WorkspaceID
+		}
+		ses, err := c.CreateSession(ctx, req)
 		if err != nil {
 			return nil, err
 		}
 		sessionID = ses.ID
 	}
 
-	// 发 prompt；v2 响应直接回 messageID（不像 v1 prompt_async 返 204）
-	admitted, err := c.Prompt(ctx, sessionID, &PromptReq{
-		Prompt: PromptInput{Text: opts.Prompt},
-	})
+	// prompt_async 返 204 无 body，messageID 由 SDK 生成并经 ack 回传
+	req := &PromptReq{
+		Agent: opts.Agent,
+		Model: opts.Model,
+		Parts: []PromptPart{{Type: "text", Text: opts.Prompt}},
+	}
+
+	// 先订阅再发 prompt，避免漏掉 turn 的首帧事件
+	ch := stream.Subscribe(sessionID)
+
+	ack, err := c.Prompt(ctx, sessionID, req)
 	if err != nil {
+		stream.Unsubscribe(sessionID)
 		return nil, err
 	}
 
-	// 订阅流（在 prompt 之后，但 v2 的 prompt.admitted 事件会因 GlobalEventStream 的
-	// 全局连接在 prompt 前已建立而被收到；若担心丢首帧，调用方应提前建立 stream）
-	ch := stream.Subscribe(sessionID)
-
 	out := make(chan HighEvent, 16)
-	go c.pump(ctx, stream, sessionID, admitted.ID, ch, out)
+	go c.pump(ctx, stream, sessionID, ack.MessageID, ch, out)
 	return out, nil
 }
 

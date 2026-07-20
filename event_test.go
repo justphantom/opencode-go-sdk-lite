@@ -3,7 +3,6 @@ package opencode
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +16,6 @@ func jsonRaw(s string) json.RawMessage  { return json.RawMessage(s) }
 
 // sseFrame 构造一帧 SSE 数据。
 func sseFrame(ev Event) string {
-	// 序列化整个 Event envelope 作为 data
 	data := mustJSON(ev)
 	return "data: " + data + "\n\n"
 }
@@ -30,63 +28,75 @@ func mustJSON(v any) string {
 	return string(b)
 }
 
-// 构造 durable 事件，seq 递增。
-func durableEvent(seq int64, evType string, payload any) Event {
+func deltaEvent(sessionID, delta string) Event {
 	return Event{
-		ID:      fmt.Sprintf("evt_%d", seq),
-		Type:    evType,
-		Durable: &Durable{AggregateID: "ses_1", Seq: seq, Version: 1},
-		Data:    jsonRaw(mustJSON(payload)),
+		Type: EventSessionNextTextDelta,
+		Data: jsonRaw(mustJSON(TextDeltaData{SessionID: sessionID, Delta: delta})),
 	}
 }
 
-func TestSessionEvents_dedupesAfterReconnect(t *testing.T) {
-	// 服务端按 after 游标回复事件。第一次连接发完 seq=1..3 后断开，
-	// 客户端应当从 after=3 继续读到 4..5，且不重复 1..3。
-	var reqCount int32
+// V1 的 SessionEvents 连接全局 /event 并按 sessionID 过滤：
+// 其他会话与全局事件（无 sessionID）不应透传。
+func TestSessionEvents_filtersBySessionID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/session/ses_1/event" {
+		if r.URL.Path != "/event" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
-		after := int64(0)
-		_, _ = fmt.Sscanf(r.URL.Query().Get("after"), "%d", &after)
-		n := atomic.AddInt32(&reqCount, 1)
-
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		fl := w.(http.Flusher)
+		_, _ = io.WriteString(w, sseFrame(deltaEvent("ses_2", "other")))
+		_, _ = io.WriteString(w, sseFrame(Event{Type: EventServerConnected}))
+		_, _ = io.WriteString(w, sseFrame(deltaEvent("ses_1", "mine")))
+		fl.Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
 
-		switch n {
-		case 1:
-			// 首次连接：发 1..3，然后关闭（模拟中途断线）
-			for seq := int64(1); seq <= 3; seq++ {
-				if after >= seq {
-					continue
-				}
-				_, _ = io.WriteString(w, sseFrame(durableEvent(seq, EventSessionNextTextDelta, TextDeltaData{Delta: "x"})))
-				fl.Flush()
-			}
-			// 主动中止连接：用 hijack 直接关掉
+	c, _ := New(srv.URL, WithHTTPClient(&http.Client{Timeout: 0}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, errc := c.SessionEvents(ctx, "ses_1", nil)
+
+	ev, ok := <-events
+	if !ok {
+		t.Fatal("events closed before first event")
+	}
+	var d TextDeltaData
+	_ = json.Unmarshal(ev.Data, &d)
+	if d.SessionID != "ses_1" || d.Delta != "mine" {
+		t.Errorf("ev = %+v", d)
+	}
+	cancel()
+	for range events {
+	}
+	<-errc
+}
+
+// 首次连接中断后应按退避重连并继续收到事件。
+func TestSessionEvents_reconnects(t *testing.T) {
+	var reqCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&reqCount, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		if n == 1 {
+			// 主动断线模拟中途断开
 			hj, ok := w.(http.Hijacker)
 			if !ok {
 				t.Fatal("server doesn't support hijack")
 			}
 			conn, _, _ := hj.Hijack()
 			_ = conn.Close()
-		default:
-			// 重连：从 after+1 续传，发剩余事件并保持连接（客户端靠 ctx 取消退出）
-			for seq := after + 1; seq <= 5; seq++ {
-				_, _ = io.WriteString(w, sseFrame(durableEvent(seq, EventSessionNextTextDelta, TextDeltaData{Delta: "x"})))
-				fl.Flush()
-			}
-			// 保持连接，等客户端 ctx 取消
-			<-r.Context().Done()
+			return
 		}
+		_, _ = io.WriteString(w, sseFrame(deltaEvent("ses_1", "after-reconnect")))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
 	}))
 	defer srv.Close()
 
 	c, _ := New(srv.URL, WithHTTPClient(&http.Client{Timeout: 0}))
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events, errc := c.SessionEvents(ctx, "ses_1", &SessionEventsOpt{
@@ -94,33 +104,29 @@ func TestSessionEvents_dedupesAfterReconnect(t *testing.T) {
 		BackoffMax: 50 * time.Millisecond,
 	})
 
-	var seen []int64
-	for ev := range events {
-		if ev.Durable != nil {
-			seen = append(seen, ev.Durable.Seq)
+	select {
+	case ev, ok := <-events:
+		if !ok {
+			t.Fatal("events closed")
 		}
-		if len(seen) >= 5 {
-			cancel()
+		var d TextDeltaData
+		_ = json.Unmarshal(ev.Data, &d)
+		if d.Delta != "after-reconnect" {
+			t.Errorf("delta = %q", d.Delta)
 		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no event after reconnect")
 	}
-	if err := <-errc; err != nil && err != context.Canceled {
-		t.Fatalf("errc = %v", err)
+	cancel()
+	for range events {
 	}
-
-	if len(seen) != 5 {
-		t.Fatalf("seen = %v", seen)
-	}
-	for i, want := range []int64{1, 2, 3, 4, 5} {
-		if seen[i] != want {
-			t.Errorf("seen[%d] = %d, want %d; full = %v", i, seen[i], want, seen)
-		}
-	}
+	<-errc
 }
 
 func TestSessionEvents_fatalErrorNoRetry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"type":"UnauthorizedError","message":"bad token"}`))
+		_, _ = w.Write([]byte(`{"name":"UnauthorizedError","data":{"message":"bad token"}}`))
 	}))
 	defer srv.Close()
 
@@ -139,6 +145,9 @@ func TestSessionEvents_fatalErrorNoRetry(t *testing.T) {
 	ae, ok := err.(*APIError)
 	if !ok || ae.Status != 401 {
 		t.Fatalf("err = %+v (%T)", err, err)
+	}
+	if ae.Type != "UnauthorizedError" || ae.Message != "bad token" {
+		t.Errorf("ae = %+v", ae)
 	}
 }
 

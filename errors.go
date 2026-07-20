@@ -19,7 +19,13 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("opencode: status %d %s: %s", e.Status, e.Type, e.Message)
 }
 
+// V1 错误格式为 {"name":"BadRequest","data":{"message":"..."}}；
+// type/message/error 兼容其他历史格式。
 type errorBody struct {
+	Name string `json:"name"`
+	Data struct {
+		Message string `json:"message"`
+	} `json:"data"`
 	Type    string `json:"type"`
 	Message string `json:"message"`
 	Error   string `json:"error"`
@@ -29,10 +35,16 @@ func parseAPIError(status int, body []byte) *APIError {
 	ae := &APIError{Status: status}
 	var b errorBody
 	if err := json.Unmarshal(body, &b); err == nil {
-		ae.Type = b.Type
-		if b.Message != "" {
+		ae.Type = b.Name
+		if ae.Type == "" {
+			ae.Type = b.Type
+		}
+		switch {
+		case b.Data.Message != "":
+			ae.Message = b.Data.Message
+		case b.Message != "":
 			ae.Message = b.Message
-		} else {
+		default:
 			ae.Message = b.Error
 		}
 	}

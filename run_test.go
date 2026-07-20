@@ -11,27 +11,27 @@ import (
 )
 
 // setupRunServer 构造一个 mock 服务：
-//   - POST /api/session 返回固定 sessionID
-//   - POST /api/session/{id}/prompt 返回 admitted
-//   - POST /api/session/{id}/interrupt 返回 204
-//   - GET /api/event 推送 framesFunc 指定的事件帧序列后保持连接
+//   - POST /session 返回固定 sessionID
+//   - POST /session/{id}/prompt_async 返回 204
+//   - POST /session/{id}/abort 返回 200
+//   - GET /event 推送 framesFunc 指定的事件帧序列后保持连接
 //
-// framesFunc(sessionID, userMsgID) 返回要推送的字节流。
-func setupRunServer(t *testing.T, sessionID, userMsgID string, framesFunc func(sid, umid string) string) (*httptest.Server, *bool) {
+// framesFunc(sessionID) 返回要推送的字节流。
+func setupRunServer(t *testing.T, sessionID string, framesFunc func(sid string) string) (*httptest.Server, *bool) {
 	t.Helper()
 	interrupted := false
 	promptCh := make(chan struct{}, 8) // 等 prompt 到达后再发 frames，模拟真实服务端时序
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/api/session" && r.Method == "POST":
-			_, _ = w.Write([]byte(`{"data":{"id":"` + sessionID + `","projectID":"global","agent":"build","model":{"id":"m","providerID":"p"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1},"title":"t","location":{"directory":"/tmp"}}}`))
-		case strings.HasPrefix(r.URL.Path, "/api/session/") && strings.HasSuffix(r.URL.Path, "/prompt"):
-			_, _ = w.Write([]byte(`{"data":{"admittedSeq":1,"id":"` + userMsgID + `","sessionID":"` + sessionID + `","prompt":{"text":"hi"},"delivery":"steer","timeCreated":1}}`))
-			promptCh <- struct{}{}
-		case strings.HasPrefix(r.URL.Path, "/api/session/") && strings.HasSuffix(r.URL.Path, "/interrupt"):
-			interrupted = true
+		case r.URL.Path == "/session" && r.Method == "POST":
+			_, _ = w.Write([]byte(`{"id":"` + sessionID + `","projectID":"global","agent":"build","model":{"id":"m","providerID":"p"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1},"title":"t","directory":"/tmp"}`))
+		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/prompt_async"):
 			w.WriteHeader(204)
-		case r.URL.Path == "/api/event":
+			promptCh <- struct{}{}
+		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/abort"):
+			interrupted = true
+			w.WriteHeader(200)
+		case r.URL.Path == "/event":
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(200)
 			fl := w.(http.Flusher)
@@ -43,7 +43,7 @@ func setupRunServer(t *testing.T, sessionID, userMsgID string, framesFunc func(s
 			}
 			// 给 Run 主循环时间执行 Subscribe
 			time.Sleep(50 * time.Millisecond)
-			_, _ = w.Write([]byte(framesFunc(sessionID, userMsgID)))
+			_, _ = w.Write([]byte(framesFunc(sessionID)))
 			fl.Flush()
 			<-r.Context().Done()
 		default:
@@ -55,8 +55,8 @@ func setupRunServer(t *testing.T, sessionID, userMsgID string, framesFunc func(s
 
 const assistantMsgID = "msg_assistant_001"
 
-// frames_textOnly: reasoning + text + step.ended(finish=stop)
-func frames_textOnly(sid, umid string) string {
+// frames_textOnly: text + step.ended(finish=stop)
+func frames_textOnly(sid string) string {
 	var b strings.Builder
 	b.WriteString(sseTextDelta(sid, assistantMsgID, "OK", 0)) // 无 durable
 	b.WriteString(sseStepEnded(sid, assistantMsgID, 5))
@@ -64,7 +64,7 @@ func frames_textOnly(sid, umid string) string {
 }
 
 func TestRun_TextOnlyTurn(t *testing.T) {
-	srv, _ := setupRunServer(t, "ses_run1", "msg_user1", frames_textOnly)
+	srv, _ := setupRunServer(t, "ses_run1", frames_textOnly)
 	defer srv.Close()
 
 	c, _ := New(srv.URL)
@@ -108,7 +108,7 @@ func TestRun_TextOnlyTurn(t *testing.T) {
 }
 
 func TestRun_PromptFirstEvent(t *testing.T) {
-	srv, _ := setupRunServer(t, "ses_run2", "msg_user2", frames_textOnly)
+	srv, _ := setupRunServer(t, "ses_run2", frames_textOnly)
 	defer srv.Close()
 
 	c, _ := New(srv.URL)
@@ -126,7 +126,8 @@ func TestRun_PromptFirstEvent(t *testing.T) {
 		if ev.Kind() != HighEventPrompt {
 			t.Fatalf("first kind = %v", ev.Kind())
 		}
-		if ev.MessageID() != "msg_user2" {
+		// prompt_async 返 204，user messageID 由客户端预生成
+		if !strings.HasPrefix(ev.MessageID(), "msg_") {
 			t.Errorf("user messageID = %q", ev.MessageID())
 		}
 		if ev.SessionID() != "ses_run2" {
@@ -139,7 +140,7 @@ func TestRun_PromptFirstEvent(t *testing.T) {
 
 // frames_otherAssistant: 先 step.started 锁定 assistantID，
 // 再混入另一个 assistantID 的 text.delta（应被过滤），最后正确帧
-func frames_otherAssistant(sid, umid string) string {
+func frames_otherAssistant(sid string) string {
 	var b strings.Builder
 	b.WriteString(sseStepStarted(sid, assistantMsgID, 1))
 	// 另一个 assistantID 的帧（应被过滤）
@@ -158,7 +159,7 @@ func sseStepStarted(sid, mid string, seq int64) string {
 }
 
 func TestRun_MessageIDFiltering(t *testing.T) {
-	srv, _ := setupRunServer(t, "ses_run3", "msg_user3", frames_otherAssistant)
+	srv, _ := setupRunServer(t, "ses_run3", frames_otherAssistant)
 	defer srv.Close()
 
 	c, _ := New(srv.URL)
@@ -205,10 +206,10 @@ func TestRun_MessageIDFiltering(t *testing.T) {
 
 func TestRun_AbortCancelsStream(t *testing.T) {
 	// stallFrames：只发 text.delta，不发终止，让 pump 必须靠 ctx 取消退出
-	stallFrames := func(sid, umid string) string {
+	stallFrames := func(sid string) string {
 		return sseTextDelta(sid, assistantMsgID, "partial...", 0)
 	}
-	srv, interrupted := setupRunServer(t, "ses_run4", "msg_user4", stallFrames)
+	srv, interrupted := setupRunServer(t, "ses_run4", stallFrames)
 	defer srv.Close()
 
 	c, _ := New(srv.URL)
@@ -253,7 +254,7 @@ func TestRun_AbortCancelsStream(t *testing.T) {
 // 里的 finish 字段（"stop" 等终止原因）。回归：旧版把 finish 塞进
 // result，消费方拿到 "stop" 当作最终回复。
 func TestRun_ResultCarriesAccumulatedText(t *testing.T) {
-	srv, _ := setupRunServer(t, "ses_run5", "msg_user5", frames_textOnly)
+	srv, _ := setupRunServer(t, "ses_run5", frames_textOnly)
 	defer srv.Close()
 
 	c, _ := New(srv.URL)

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// GlobalEventStream 维护一条到 /api/event 的全局长连，按 sessionID 路由事件给订阅者。
+// GlobalEventStream 维护一条到 /event 的全局长连，按 sessionID 路由事件给订阅者。
 // 设计要点（移植自 lark-bridge/internal/opencodeserve/stream.go，已验证）：
 //   - 指数退避 100ms→5s，连接存活 <2s 视为 flapping 不重置退避
 //   - 心跳 watchdog 15s 无帧则强制重连破半开 TCP
@@ -154,14 +154,14 @@ func (s *GlobalEventStream) run(ctx context.Context) {
 	}
 }
 
-// connect 发起一次 /api/event 连接并阻塞读流。
+// connect 发起一次 /event 连接并阻塞读流。
 // 返回 (failed=true 表示异常退出需重连, shortLived 表示连接存活 <2s 视为 flapping)。
 func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived bool) {
 	connCtx, cancel := context.WithCancel(ctx)
 	s.setConnCancel(cancel)
 	defer s.clearConnCancel()
 
-	req, err := s.c.newRequest(connCtx, http_GET, "/api/event", nil, nil)
+	req, err := s.c.newRequest(connCtx, http_GET, "/event", nil, nil)
 	if err != nil {
 		return true, true
 	}

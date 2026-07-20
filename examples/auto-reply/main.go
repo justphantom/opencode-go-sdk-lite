@@ -81,7 +81,7 @@ func main() {
 	// 会顶掉 Run 的订阅，因此本 demo 改用"低层直订阅"模式）。
 
 	// 简化：再起一次 session，用低层 SessionEvents 直接处理。
-	ses, err := client.CreateSession(ctx, &oc.CreateSessionReq{Location: loc})
+	ses, err := client.CreateSession(ctx, &oc.CreateSessionReq{Directory: loc.Directory, WorkspaceID: loc.WorkspaceID})
 	if err != nil {
 		log.Fatalf("CreateSession: %v", err)
 	}
@@ -99,7 +99,7 @@ func main() {
 	// Prompt 与消费事件并发
 	go func() {
 		_, perr := client.Prompt(ctx, ses.ID, &oc.PromptReq{
-			Prompt: oc.PromptInput{Text: *prompt},
+			Parts: []oc.PromptPart{{Type: "text", Text: *prompt}},
 		})
 		if perr != nil {
 			log.Printf("Prompt: %v", perr)
@@ -113,20 +113,20 @@ func main() {
 			_ = json.Unmarshal(ev.Data, &d)
 			fmt.Print(d.Delta)
 
-		case oc.EventPermissionV2Asked:
+		case oc.EventPermissionAsked:
 			var d oc.PermissionAskedData
 			_ = json.Unmarshal(ev.Data, &d)
-			fmt.Printf("\n[perm] action=%s resources=%v → %s\n", d.Action, d.Resources, *perm)
-			if err := client.ReplyPermission(ctx, ses.ID, d.ID, *perm, ""); err != nil {
+			fmt.Printf("\n[perm] permission=%s patterns=%v → %s\n", d.Permission, d.Patterns, *perm)
+			if err := client.ReplyPermission(ctx, d.ID, *perm, ""); err != nil {
 				log.Printf("ReplyPermission: %v", err)
 			}
 
-		case oc.EventQuestionV2Asked:
+		case oc.EventQuestionAsked:
 			var d oc.QuestionAskedData
 			_ = json.Unmarshal(ev.Data, &d)
 			ans := buildAnswers(d.Questions, *custom)
 			fmt.Printf("\n[question] %d 个问题 → %v\n", len(d.Questions), ans)
-			if err := client.ReplyQuestion(ctx, ses.ID, d.ID, &oc.QuestionReply{Answers: ans}); err != nil {
+			if err := client.ReplyQuestion(ctx, d.ID, &oc.QuestionReply{Answers: ans}); err != nil {
 				log.Printf("ReplyQuestion: %v", err)
 			}
 
@@ -152,7 +152,7 @@ func main() {
 
 // buildAnswers 给每个问题构造一个 label 列表：允许自定义时用 custom 文本，
 // 否则选第 1 个 option（无 option 时空切片）。
-func buildAnswers(qs []oc.QuestionV2Info, custom string) [][]string {
+func buildAnswers(qs []oc.QuestionInfo, custom string) [][]string {
 	out := make([][]string, len(qs))
 	for i, q := range qs {
 		switch {

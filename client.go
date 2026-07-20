@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// Client 是 opencode v2 HTTP API 的薄客户端。
+// Client 是 opencode v1 HTTP API 的薄客户端。
 type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client
@@ -112,13 +112,13 @@ func (c *Client) doEmpty(ctx context.Context, method, path string, query url.Val
 	return nil
 }
 
-// Health 检查服务端是否可用。GET /api/health，解析 {healthy:true}，
+// Health 检查服务端是否可用。GET /global/health，解析 {healthy:true}，
 // 响应非 2xx 或 healthy != true 都视为不健康。
 func (c *Client) Health(ctx context.Context) error {
 	var body struct {
 		Healthy bool `json:"healthy"`
 	}
-	if err := c.doJSON(ctx, http_GET, "/api/health", nil, nil, &body, 0); err != nil {
+	if err := c.doJSON(ctx, http_GET, "/global/health", nil, nil, &body, 0); err != nil {
 		return err
 	}
 	if !body.Healthy {

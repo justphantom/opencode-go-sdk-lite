@@ -8,36 +8,47 @@ import (
 	"time"
 )
 
-// messageID 生成对齐 opencode 官方 MessageID.create()：
-// 格式 msg_<12 hex><14 base62>，共 30 字符。hex 段由毫秒时间戳+计数器组合而成，
+// id 生成对齐 opencode 官方 id.ts 的 create(prefix, "ascending")：
+// 格式 <prefix>_<12 hex><14 base62>，共 30 字符。hex 段由毫秒时间戳+计数器组合而成，
 // 单调非递减（防 NTP 回拨导致 prompt 被静默丢弃）；base62 段为随机后缀。
+// 所有前缀共用同一单调状态，与官方一致。
 //
 // 移植自 lark-bridge/internal/opencodeserve/id.go（已验证）。
 
 const (
 	msgPrefix      = "msg"
+	prtPrefix      = "prt"
 	msgRandLen     = 14
 	msgTimeShift   = 12 // 0x1000
 	msgTsMask36    = (uint64(1) << 36) - 1
 	base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
 
-type msgIDState struct {
+type idState struct {
 	mu      sync.Mutex
 	lastMs  int64
 	counter uint64
 }
 
-var defaultMsgIDState = &msgIDState{}
+var defaultIDState = &idState{}
 
-// GenerateMessageID 生成一个新的 message id。
+// GenerateMessageID 生成一个新的 message id（msg_ 前缀）。
 func GenerateMessageID() (string, error) {
-	return GenerateMessageIDAt(time.Now().UnixMilli())
+	return generateIDAt(msgPrefix, time.Now().UnixMilli())
 }
 
-// GenerateMessageIDAt 用指定毫秒时间戳生成 id，便于测试。
+// GeneratePartID 生成一个新的 part id（prt_ 前缀）。
+func GeneratePartID() (string, error) {
+	return generateIDAt(prtPrefix, time.Now().UnixMilli())
+}
+
+// GenerateMessageIDAt 用指定毫秒时间戳生成 message id，便于测试。
 func GenerateMessageIDAt(ms int64) (string, error) {
-	ms, seq := defaultMsgIDState.nextSeq(ms)
+	return generateIDAt(msgPrefix, ms)
+}
+
+func generateIDAt(prefix string, ms int64) (string, error) {
+	ms, seq := defaultIDState.nextSeq(ms)
 
 	now := (uint64(ms) & msgTsMask36) << msgTimeShift
 	now |= seq & 0xFFF
@@ -51,11 +62,11 @@ func GenerateMessageIDAt(ms int64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s_%s%s", msgPrefix, hex.EncodeToString(b[:]), rand), nil
+	return fmt.Sprintf("%s_%s%s", prefix, hex.EncodeToString(b[:]), rand), nil
 }
 
 // nextSeq 推进计数器并按 ms 钳制，保证 hex 段单调非递减。返回钳制后的 ms 与 seq。
-func (s *msgIDState) nextSeq(ms int64) (int64, uint64) {
+func (s *idState) nextSeq(ms int64) (int64, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ms <= s.lastMs {

@@ -5,53 +5,78 @@ import "encoding/json"
 // ============ 通用 ============
 
 // LocationRef 定位一个工作区目录；至少给出 Directory。
+// V1 接口以平铺 query（directory/workspace）传递，见 locationQuery。
 type LocationRef struct {
 	Directory   string `json:"directory"`
 	WorkspaceID string `json:"workspaceID,omitempty"`
 }
 
-// ModelRef 引用一个 provider 模型。
+// ModelRef 引用一个 provider 模型；与 V1 Session.model 同构。
 type ModelRef struct {
 	ID         string `json:"id"`
 	ProviderID string `json:"providerID"`
 	Variant    string `json:"variant,omitempty"`
 }
 
+// PromptModelRef 是 GET /agent 响应中 Agent.model 的模型引用（注意 wire 字段是 modelID）。
+// prompt 请求侧统一用 ModelRef，由 SDK 内部转换（见 Client.Prompt）。
+type PromptModelRef struct {
+	ProviderID string `json:"providerID"`
+	ModelID    string `json:"modelID"`
+}
+
 // ============ Prompt ============
 
-type PromptInput struct {
-	Text   string                      `json:"text"`
-	Files  []PromptInputFileAttachment `json:"files,omitempty"`
-	Agents []PromptAgentAttachment     `json:"agents,omitempty"`
+// PromptPart 是 prompt_async parts 的元素；当前仅覆盖 text，其余类型用 Raw 透传。
+// ID 留空时由 SDK 生成（prt_ 前缀），见 Client.Prompt。
+type PromptPart struct {
+	ID   string `json:"id,omitempty"`
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
-type PromptInputFileAttachment struct {
-	Path     string `json:"path"`
-	Content  string `json:"content,omitempty"`
-	Encoding string `json:"encoding,omitempty"`
+// PromptReq 对应 POST /session/{id}/prompt_async 的请求体。
+// MessageID 留空时由 SDK 生成（msg_ 前缀），生成结果经 PromptAck 回传。
+type PromptReq struct {
+	MessageID string       `json:"-"`
+	Model     *ModelRef    `json:"-"`
+	Agent     string       `json:"agent,omitempty"`
+	NoReply   bool         `json:"noReply,omitempty"`
+	System    string       `json:"system,omitempty"`
+	Variant   string       `json:"variant,omitempty"`
+	Parts     []PromptPart `json:"parts"`
 }
 
-type PromptAgentAttachment struct {
-	Source  string         `json:"source"`
-	Agent   string         `json:"agent,omitempty"`
-	Context map[string]any `json:"context,omitempty"`
+// PromptAck 是 Prompt 的回执：prompt_async 返 204 无 body，
+// messageID/partID 是关联后续 SSE 事件（message.updated、message.part.*）的唯一句柄。
+type PromptAck struct {
+	MessageID string
+	PartIDs   []string
 }
 
 // ============ Session ============
 
-type SessionV2Info struct {
-	ID        string        `json:"id"`
-	ParentID  string        `json:"parentID,omitempty"`
-	ProjectID string        `json:"projectID"`
-	Agent     string        `json:"agent,omitempty"`
-	Model     *ModelRef     `json:"model,omitempty"`
-	Cost      float64       `json:"cost"`
-	Tokens    SessionTokens `json:"tokens"`
-	Time      SessionTime   `json:"time"`
-	Title     string        `json:"title"`
-	Location  *LocationRef  `json:"location"`
-	Subpath   string        `json:"subpath,omitempty"`
-	Revert    *RevertState  `json:"revert,omitempty"`
+// SessionInfo 对应 V1 Session schema。
+type SessionInfo struct {
+	ID          string          `json:"id"`
+	Slug        string          `json:"slug,omitempty"`
+	ProjectID   string          `json:"projectID"`
+	WorkspaceID string          `json:"workspaceID,omitempty"`
+	Directory   string          `json:"directory"`
+	Path        string          `json:"path,omitempty"`
+	ParentID    string          `json:"parentID,omitempty"`
+	Title       string          `json:"title"`
+	Agent       string          `json:"agent,omitempty"`
+	Model       *ModelRef       `json:"model,omitempty"`
+	Version     string          `json:"version,omitempty"`
+	Cost        float64         `json:"cost"`
+	Tokens      SessionTokens   `json:"tokens"`
+	Time        SessionTime     `json:"time"`
+	Summary     *SessionSummary `json:"summary,omitempty"`
+	Share       *SessionShare   `json:"share,omitempty"`
+	Metadata    map[string]any  `json:"metadata,omitempty"`
+	Permission  json.RawMessage `json:"permission,omitempty"`
+	Revert      *RevertState    `json:"revert,omitempty"`
 }
 
 type SessionTokens struct {
@@ -66,124 +91,100 @@ type SessionCache struct {
 	Write float64 `json:"write"`
 }
 
+// SessionTime 的时间戳为毫秒整数。
 type SessionTime struct {
-	Created  float64 `json:"created"`
-	Updated  float64 `json:"updated"`
-	Archived float64 `json:"archived,omitempty"`
+	Created    int64 `json:"created"`
+	Updated    int64 `json:"updated"`
+	Compacting int64 `json:"compacting,omitempty"`
+	Archived   int64 `json:"archived,omitempty"`
 }
 
+type SessionSummary struct {
+	Additions float64 `json:"additions"`
+	Deletions float64 `json:"deletions"`
+	Files     float64 `json:"files"`
+}
+
+type SessionShare struct {
+	URL string `json:"url"`
+}
+
+// RevertState 对应 V1 Session.revert。
 type RevertState struct {
-	Commit string `json:"commit,omitempty"`
-	Staged bool   `json:"staged,omitempty"`
+	MessageID string `json:"messageID,omitempty"`
+	PartID    string `json:"partID,omitempty"`
+	Snapshot  string `json:"snapshot,omitempty"`
+	Diff      string `json:"diff,omitempty"`
 }
 
-type SessionsResponse struct {
-	Data   []SessionV2Info `json:"data"`
-	Cursor *Cursor         `json:"cursor,omitempty"`
-}
-
-type Cursor struct {
-	Previous string `json:"previous,omitempty"`
-	Next     string `json:"next,omitempty"`
-}
-
-// CreateSessionReq 对应 POST /api/session 的请求体；至少留空由服务端生成 id。
+// CreateSessionReq 对应 POST /session；Directory/WorkspaceID 走平铺 query，其余进 body。
 type CreateSessionReq struct {
-	ID       string       `json:"id,omitempty"`
-	Agent    string       `json:"agent,omitempty"`
-	Model    *ModelRef    `json:"model,omitempty"`
-	Location *LocationRef `json:"location,omitempty"`
-}
-
-// PromptReq 对应 POST /api/session/{id}/prompt 的请求体。
-type PromptReq struct {
-	ID       string      `json:"id,omitempty"`
-	Prompt   PromptInput `json:"prompt"`
-	Delivery string      `json:"delivery,omitempty"`
-	Resume   *bool       `json:"resume,omitempty"`
-}
-
-// SessionInputAdmitted 是 prompt 成功入队后的响应。
-type SessionInputAdmitted struct {
-	AdmittedSeq int64   `json:"admittedSeq"`
-	ID          string  `json:"id"`
-	SessionID   string  `json:"sessionID"`
-	Prompt      Prompt  `json:"prompt"`
-	Delivery    string  `json:"delivery"`
-	TimeCreated float64 `json:"timeCreated"`
-	PromotedSeq int64   `json:"promotedSeq,omitempty"`
-}
-
-type Prompt struct {
-	Text   string            `json:"text"`
-	Files  []json.RawMessage `json:"files,omitempty"`
-	Agents []json.RawMessage `json:"agents,omitempty"`
+	ParentID    string         `json:"parentID,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	Agent       string         `json:"agent,omitempty"`
+	Model       *ModelRef      `json:"model,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	Directory   string         `json:"-"`
+	WorkspaceID string         `json:"workspaceID,omitempty"`
 }
 
 // ============ Messages ============
 
-// SessionMessage 是一条历史消息；spec 用 anyOf 覆盖 8 种变体，这里只做弱类型透传。
+// SessionMessage 是 GET /session/{id}/message 的元素：消息元信息 + parts。
+// Parts 保留原始 JSON（Part 有 10+ 种类型），调用方按需反序列化。
 type SessionMessage struct {
-	Type string          `json:"type"`
-	Raw  json.RawMessage `json:"-"`
+	Info  MessageInfo       `json:"info"`
+	Parts []json.RawMessage `json:"parts"`
 }
 
-func (m *SessionMessage) UnmarshalJSON(data []byte) error {
-	m.Raw = append(m.Raw[:0], data...)
-	var head struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(data, &head); err != nil {
-		return err
-	}
-	m.Type = head.Type
-	return nil
-}
-
-type SessionMessagesResponse struct {
-	Data   []SessionMessage `json:"data"`
-	Cursor *Cursor          `json:"cursor,omitempty"`
+// MessageInfo 是 User/Assistant 消息的公共字段；更多字段请从 Parts 或重取。
+type MessageInfo struct {
+	ID        string `json:"id"`
+	SessionID string `json:"sessionID"`
+	Role      string `json:"role"`
+	Agent     string `json:"agent,omitempty"`
 }
 
 // ============ Model / Provider ============
 
-type ModelV2Info struct {
+// ModelInfo 对应 V1 Model schema；Enabled 由 status=="active" 推导（见 ListModels）。
+type ModelInfo struct {
 	ID           string            `json:"id"`
 	ProviderID   string            `json:"providerID"`
-	Family       string            `json:"family,omitempty"`
 	Name         string            `json:"name"`
+	Family       string            `json:"family,omitempty"`
+	Status       string            `json:"status"`
 	API          ModelAPI          `json:"api"`
 	Capabilities ModelCapabilities `json:"capabilities"`
-	Request      json.RawMessage   `json:"request"`
-	Variants     []json.RawMessage `json:"variants"`
-	Time         ModelTime         `json:"time"`
-	Cost         []json.RawMessage `json:"cost"`
-	Status       string            `json:"status"`
-	Enabled      bool              `json:"enabled"`
+	Cost         ModelCost         `json:"cost"`
 	Limit        ModelLimit        `json:"limit"`
+	Options      map[string]any    `json:"options,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	ReleaseDate  string            `json:"release_date,omitempty"`
+	Variants     json.RawMessage   `json:"variants,omitempty"`
+	Enabled      bool              `json:"-"`
 }
 
 type ModelAPI struct {
-	Model string `json:"model"`
+	ID  string `json:"id"`
+	URL string `json:"url"`
+	NPM string `json:"npm"`
 }
 
-// ModelCapabilities 描述模型能力。
-// spec 声明了 reasoning/vision/audio 等布尔字段，但实测服务端只发 input/output(数组)+tools(布尔)。
-// 保留 spec 全部字段以兼容未来；input/output 按实测用 []string。
+// ModelCapabilities 按 V1 schema：tools 布尔 + input/output 数组。
 type ModelCapabilities struct {
-	Reasoning   bool     `json:"reasoning,omitempty"`
-	Tools       bool     `json:"tools"`
-	Vision      bool     `json:"vision,omitempty"`
-	Audio       bool     `json:"audio,omitempty"`
-	Input       []string `json:"input,omitempty"`
-	Output      []string `json:"output,omitempty"`
-	SystemRole  bool     `json:"systemRole,omitempty"`
-	Attachments bool     `json:"attachments,omitempty"`
-	Batch       bool     `json:"batch,omitempty"`
+	Tools  bool     `json:"tools"`
+	Input  []string `json:"input,omitempty"`
+	Output []string `json:"output,omitempty"`
 }
 
-type ModelTime struct {
-	Released float64 `json:"released"`
+type ModelCost struct {
+	Input  float64 `json:"input"`
+	Output float64 `json:"output"`
+	Cache  struct {
+		Read  float64 `json:"read"`
+		Write float64 `json:"write"`
+	} `json:"cache"`
 }
 
 type ModelLimit struct {
@@ -192,54 +193,81 @@ type ModelLimit struct {
 	Output  int `json:"output"`
 }
 
-type ProviderV2Info struct {
-	ID            string          `json:"id"`
-	IntegrationID string          `json:"integrationID,omitempty"`
-	Name          string          `json:"name"`
-	Disabled      bool            `json:"disabled,omitempty"`
-	API           json.RawMessage `json:"api"`
-	Request       json.RawMessage `json:"request"`
+// ProviderInfo 对应 V1 Provider schema；Models 以 modelID 为键。
+type ProviderInfo struct {
+	ID      string               `json:"id"`
+	Name    string               `json:"name"`
+	Source  string               `json:"source"`
+	Env     []string             `json:"env,omitempty"`
+	Options map[string]any       `json:"options,omitempty"`
+	Models  map[string]ModelInfo `json:"models,omitempty"`
+}
+
+// ProvidersResponse 是 GET /provider 的响应。
+type ProvidersResponse struct {
+	All       []ProviderInfo    `json:"all"`
+	Default   map[string]string `json:"default,omitempty"`
+	Connected []string          `json:"connected,omitempty"`
 }
 
 // ============ Agent ============
 
-// AgentV2Info 描述一个 agent；request 与 permissions 结构复杂，保留 RawMessage 透传。
-type AgentV2Info struct {
-	ID          string          `json:"id"`
-	Model       *ModelRef       `json:"model,omitempty"`
-	Request     json.RawMessage `json:"request"`
-	System      string          `json:"system,omitempty"`
+// AgentInfo 对应 V1 Agent schema；permission/options 保留 RawMessage 透传。
+type AgentInfo struct {
+	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Mode        string          `json:"mode"` // subagent | primary | all
+	Native      bool            `json:"native,omitempty"`
 	Hidden      bool            `json:"hidden"`
 	Color       string          `json:"color,omitempty"`
 	Steps       int             `json:"steps,omitempty"`
-	Permissions json.RawMessage `json:"permissions"`
+	Model       *PromptModelRef `json:"model,omitempty"`
+	Variant     string          `json:"variant,omitempty"`
+	Prompt      string          `json:"prompt,omitempty"`
+	Permission  json.RawMessage `json:"permission,omitempty"`
+	Options     json.RawMessage `json:"options,omitempty"`
 }
 
 // ============ Permission / Question ============
 
-type QuestionV2Request struct {
-	ID        string           `json:"id"`
-	SessionID string           `json:"sessionID"`
-	Questions []QuestionV2Info `json:"questions"`
-	Tool      *QuestionV2Tool  `json:"tool,omitempty"`
+// PermissionRequest 对应 V1 PermissionRequest schema。
+type PermissionRequest struct {
+	ID         string          `json:"id"`
+	SessionID  string          `json:"sessionID"`
+	Permission string          `json:"permission"`
+	Patterns   []string        `json:"patterns,omitempty"`
+	Metadata   map[string]any  `json:"metadata,omitempty"`
+	Always     []string        `json:"always,omitempty"`
+	Tool       *PermissionTool `json:"tool,omitempty"`
 }
 
-type QuestionV2Info struct {
-	Question string             `json:"question"`
-	Header   string             `json:"header"`
-	Options  []QuestionV2Option `json:"options"`
-	Multiple bool               `json:"multiple,omitempty"`
-	Custom   bool               `json:"custom,omitempty"`
+type PermissionTool struct {
+	MessageID string `json:"messageID"`
+	CallID    string `json:"callID"`
 }
 
-type QuestionV2Option struct {
+// QuestionRequest 对应 V1 QuestionRequest schema。
+type QuestionRequest struct {
+	ID        string         `json:"id"`
+	SessionID string         `json:"sessionID"`
+	Questions []QuestionInfo `json:"questions"`
+	Tool      *QuestionTool  `json:"tool,omitempty"`
+}
+
+type QuestionInfo struct {
+	Question string           `json:"question"`
+	Header   string           `json:"header"`
+	Options  []QuestionOption `json:"options"`
+	Multiple bool             `json:"multiple,omitempty"`
+	Custom   bool             `json:"custom,omitempty"`
+}
+
+type QuestionOption struct {
 	Label       string `json:"label"`
 	Description string `json:"description"`
 }
 
-type QuestionV2Tool struct {
+type QuestionTool struct {
 	MessageID string `json:"messageID"`
 	CallID    string `json:"callID"`
 }
@@ -255,40 +283,6 @@ const (
 	PermissionReplyAlways = "always"
 	PermissionReplyReject = "reject"
 )
-
-// ============ Permission / Question（补充） ============
-
-type PermissionV2Request struct {
-	ID        string              `json:"id"`
-	SessionID string              `json:"sessionID"`
-	Action    string              `json:"action"`
-	Resources []string            `json:"resources"`
-	Save      []string            `json:"save,omitempty"`
-	Metadata  map[string]any      `json:"metadata,omitempty"`
-	Source    *PermissionV2Source `json:"source,omitempty"`
-}
-
-type PermissionV2Source struct {
-	Type      string `json:"type"`
-	MessageID string `json:"messageID"`
-	CallID    string `json:"callID"`
-}
-
-// CreatePermissionReq 对应 POST /api/session/{id}/permission。
-type CreatePermissionReq struct {
-	ID        string              `json:"id,omitempty"`
-	Action    string              `json:"action"`
-	Resources []string            `json:"resources"`
-	Save      []string            `json:"save,omitempty"`
-	Metadata  map[string]any      `json:"metadata,omitempty"`
-	Source    *PermissionV2Source `json:"source,omitempty"`
-	Agent     string              `json:"agent,omitempty"`
-}
-
-type PermissionV2Created struct {
-	ID     string `json:"id"`
-	Effect string `json:"effect"` // allow | deny | ask
-}
 
 // ============ Event ============
 
@@ -456,20 +450,22 @@ type StepCache struct {
 	Write float64 `json:"write"`
 }
 
+// PermissionAskedData 是 permission.asked 的 data；与 PermissionRequest 同构。
 type PermissionAskedData struct {
-	ID        string         `json:"id"`
-	SessionID string         `json:"sessionID"`
-	Action    string         `json:"action"`
-	Resources []string       `json:"resources"`
-	Save      []string       `json:"save,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	ID         string         `json:"id"`
+	SessionID  string         `json:"sessionID"`
+	Permission string         `json:"permission"`
+	Patterns   []string       `json:"patterns,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	Always     []string       `json:"always,omitempty"`
 }
 
+// QuestionAskedData 是 question.asked 的 data；与 QuestionRequest 同构。
 type QuestionAskedData struct {
-	ID        string           `json:"id"`
-	SessionID string           `json:"sessionID"`
-	Questions []QuestionV2Info `json:"questions"`
-	Tool      *QuestionV2Tool  `json:"tool,omitempty"`
+	ID        string         `json:"id"`
+	SessionID string         `json:"sessionID"`
+	Questions []QuestionInfo `json:"questions"`
+	Tool      *QuestionTool  `json:"tool,omitempty"`
 }
 
 type SessionIdleData struct {
