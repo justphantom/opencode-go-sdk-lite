@@ -1,6 +1,9 @@
 package opencode
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // HighEventKind 是高层事件的语义类别，对齐 lark-bridge event.go 的 10 个 kind。
 // 不同于原始 Event（88 种 type 字符串），HighEvent 把过程流归纳为少数可消费类别。
@@ -114,6 +117,7 @@ func mapToHighEvent(ev Event, assistantID *string) (HighEvent, bool, bool) {
 			kind:      HighEventToolResult,
 			sessionID: d.SessionID,
 			messageID: d.AssistantMessageID,
+			text:      joinToolContent(d.Content),
 		}, true, false
 
 	case EventSessionNextToolFailed:
@@ -127,6 +131,7 @@ func mapToHighEvent(ev Event, assistantID *string) (HighEvent, bool, bool) {
 			sessionID:   d.SessionID,
 			messageID:   d.AssistantMessageID,
 			isToolError: true,
+			text:        formatToolError(d.Error),
 		}, true, false
 
 	case EventSessionNextStepEnded:
@@ -203,4 +208,46 @@ func jsonRawOrNil(m map[string]any) []byte {
 		return nil
 	}
 	return b
+}
+
+// joinToolContent 拼接 tool.success 事件 content 数组里所有 type=="text" 的
+// text 字段，作为 HighEvent.text 供消费方渲染工具输出。服务端实测格式：
+// [{"type":"text","text":"..."}, ...]；其他类型（image/file 等）忽略。
+func joinToolContent(content []json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, raw := range content {
+		var part struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &part); err != nil {
+			continue
+		}
+		if part.Type != "text" || part.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(part.Text)
+	}
+	return b.String()
+}
+
+// formatToolError 把 tool.failed 的 error map 拍平成一行可读文本。
+// 实测 error 至少含 message；无则回退到 JSON 序列化。
+func formatToolError(errMap map[string]any) string {
+	if len(errMap) == 0 {
+		return ""
+	}
+	if msg, ok := errMap["message"].(string); ok && msg != "" {
+		return msg
+	}
+	if b, err := json.Marshal(errMap); err == nil {
+		return string(b)
+	}
+	return ""
 }
