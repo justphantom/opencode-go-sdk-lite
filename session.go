@@ -87,7 +87,11 @@ func (c *Client) GetSession(ctx context.Context, sessionID string) (*SessionV2In
 	return &wrapped.Data, nil
 }
 
-// Prompt 发送一条消息并调度 agent-loop。
+// Prompt 异步入队一条消息并调度 agent-loop。
+// 返回入队确认（SessionInputAdmitted，含 messageID/admittedSeq），
+// 模型推理在服务端异步进行，结果通过 SSE 流（SessionEvents 或 GlobalEventStream）推送。
+// 本方法不会阻塞等待回复——spec 描述为 "durably admit one session input and schedule
+// agent-loop execution"，实测约 100ms 内返回。
 func (c *Client) Prompt(ctx context.Context, sessionID string, req *PromptReq) (*SessionInputAdmitted, error) {
 	if req == nil {
 		return nil, fmt.Errorf("opencode: prompt request is nil")

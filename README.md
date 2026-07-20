@@ -36,7 +36,7 @@ go get github.com/justphantom/opencode-go-sdk-lite
 | `ListSessions(ctx, *ListSessionsOpt)` | `GET /api/session` | `v2.session.list`（支持 cursor 分页） |
 | `GetSession(ctx, sessionID)` | `GET /api/session/{id}` | `v2.session.get` |
 | `DeleteSession(ctx, id)` | `DELETE /session/{id}` | v2 spec 未声明；走 v1 端点（实测真删） |
-| `Prompt(ctx, id, *PromptReq)` | `POST /api/session/{id}/prompt` | `v2.session.prompt` |
+| `Prompt(ctx, id, *PromptReq)` | `POST /api/session/{id}/prompt` | `v2.session.prompt`（异步入队，立即返回 `SessionInputAdmitted`；模型回复走 SSE） |
 | `Interrupt(ctx, id)` | `POST /api/session/{id}/interrupt` | `v2.session.interrupt` |
 | `SwitchAgent(ctx, id, agent)` | `POST /api/session/{id}/agent` | `v2.session.switchAgent` |
 | `SwitchModel(ctx, id, ModelRef)` | `POST /api/session/{id}/model` | `v2.session.switchModel` |
