@@ -17,7 +17,6 @@ type RunOptions struct {
 }
 
 const (
-	runProbeTimeout = 30 * time.Second // 既无 postErr 也无事件则视为服务端卡死
 	runAbortTimeout = 5 * time.Second
 )
 
@@ -84,25 +83,12 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 
 	var assistantID string
 	var accText strings.Builder
-	probe := time.NewTimer(runProbeTimeout)
-	defer probe.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			c.fireAndForgetAbort(sessionID)
 			out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true}
-			return
-		case <-probe.C:
-			// 既无 postErr（v2 的 prompt 已返回 admitted，等价 postErr 已到）也无事件：
-			// 视为服务端 turn 卡死
-			out <- HighEvent{
-				kind:      HighEventError,
-				sessionID: sessionID,
-				messageID: assistantID,
-				isError:   true,
-				result:    fmt.Sprintf("opencode: no SSE events within %s (turn stuck?)", runProbeTimeout),
-			}
 			return
 		case ev, ok := <-src:
 			if !ok {
@@ -118,14 +104,6 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			if he.MessageID() != "" && assistantID != "" && he.MessageID() != assistantID {
 				continue
 			}
-			// 收到首事件，重置 probe
-			if !probe.Stop() {
-				select {
-				case <-probe.C:
-				default:
-				}
-			}
-			probe.Reset(runProbeTimeout)
 
 			// 累积 assistant 输出文本，供终止事件回填 result。
 			if he.Kind() == HighEventText {
