@@ -109,6 +109,19 @@ func (c *Client) Interrupt(ctx context.Context, sessionID string) error {
 	return c.doEmpty(ctx, http_POST, "/api/session/"+sessionID+"/interrupt", nil, nil, 204)
 }
 
+// DeleteSession 删除会话。v2 spec 未提供删除端点，实际由 v1 端点 DELETE /session/{id} 承担
+//（实测：返 200 + body true，删后 GET /api/session/{id} 返 404）。这是 v2 与 v1 共存的官方行为。
+func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
+	var ok bool
+	if err := c.doJSON(ctx, http_DELETE, "/session/"+sessionID, nil, nil, &ok, 0); err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("opencode: delete session %s returned false", sessionID)
+	}
+	return nil
+}
+
 // SwitchAgent 切换后续 provider turn 的 agent。
 func (c *Client) SwitchAgent(ctx context.Context, sessionID, agent string) error {
 	body := map[string]string{"agent": agent}
@@ -158,6 +171,7 @@ func (c *Client) ListMessages(ctx context.Context, sessionID string, opt *ListMe
 
 // HTTP 方法常量，避免多处裸字符串。
 const (
-	http_GET  = "GET"
-	http_POST = "POST"
+	http_GET    = "GET"
+	http_POST   = "POST"
+	http_DELETE = "DELETE"
 )

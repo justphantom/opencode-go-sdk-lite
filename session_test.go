@@ -206,3 +206,33 @@ func TestHealth_serverError(t *testing.T) {
 		t.Fatalf("err = %+v (%T)", err, err)
 	}
 }
+
+func TestDeleteSession(t *testing.T) {
+	var gotPath, gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		_, _ = w.Write([]byte(`true`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	if err := c.DeleteSession(context.Background(), "ses_1"); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if gotMethod != "DELETE" || gotPath != "/session/ses_1" {
+		t.Errorf("got %s %s, want DELETE /session/ses_1", gotMethod, gotPath)
+	}
+}
+
+func TestDeleteSession_falseIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`false`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	if err := c.DeleteSession(context.Background(), "ses_1"); err == nil {
+		t.Fatal("expected error when server returns false")
+	}
+}
