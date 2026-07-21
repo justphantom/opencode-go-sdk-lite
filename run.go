@@ -118,10 +118,10 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 				accText.WriteString(he.Text())
 			}
 			// HighEventResult 的 result 字段由 mapToHighEvent 留空（finish 不是
-			// 输出文本），此处用累积的 text delta 填充，让消费方拿到的
-			// Result() 是助手回复本体而非 "stop" 这类终止原因。
+			// 输出文本）。优先取服务端落库文本（GET message 的 FinalText，
+			// 免疫 SSE 丢帧）；取不到/为空则回退累积的 text delta。
 			if he.Kind() == HighEventResult && he.result == "" {
-				he.result = accText.String()
+				he.result = c.finalText(ctx, sessionID, assistantID, accText.String())
 			}
 
 			select {
@@ -136,6 +136,18 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			}
 		}
 	}
+}
+
+// finalText 返回 turn 的最终回复：优先服务端落库文本，失败回退 accumulated。
+func (c *Client) finalText(ctx context.Context, sessionID, assistantID, accumulated string) string {
+	if assistantID != "" {
+		if m, err := c.GetMessage(ctx, sessionID, assistantID); err == nil {
+			if t := m.FinalText(); t != "" {
+				return t
+			}
+		}
+	}
+	return accumulated
 }
 
 // fireAndForgetAbort ctx 取消时尽力通知服务端中断，超时即放弃。

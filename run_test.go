@@ -31,6 +31,9 @@ func setupRunServer(t *testing.T, sessionID string, framesFunc func(sid string) 
 		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/abort"):
 			interrupted = true
 			w.WriteHeader(200)
+		case strings.HasPrefix(r.URL.Path, "/session/") && strings.Contains(r.URL.Path, "/message/") && r.Method == "GET":
+			// 落库文本与 frames_textOnly 的 delta 一致（"OK"）
+			_, _ = w.Write([]byte(`{"info":{"id":"` + assistantMsgID + `","sessionID":"` + sessionID + `","role":"assistant"},"parts":[{"type":"text","text":"OK"}]}`))
 		case r.URL.Path == "/event":
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(200)
@@ -287,6 +290,60 @@ func TestRun_ResultCarriesAccumulatedText(t *testing.T) {
 	if got := result.Result(); got != "OK" {
 		t.Errorf("Result() = %q, want accumulated text %q (not finish reason)", got, "OK")
 	}
+}
+
+// TestRun_ResultPrefersServerText：终止回填优先用服务端落库文本
+// （GET message 的 FinalText），SSE delta 缺失时以服务端为准。
+func TestRun_ResultPrefersServerText(t *testing.T) {
+	promptCh := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == "POST":
+			_, _ = w.Write([]byte(`{"id":"ses_run7","projectID":"global","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1},"title":"t","directory":"/tmp"}`))
+		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/prompt_async"):
+			w.WriteHeader(204)
+			promptCh <- struct{}{}
+		case strings.Contains(r.URL.Path, "/message/") && r.Method == "GET":
+			_, _ = w.Write([]byte(`{"info":{"id":"` + assistantMsgID + `","sessionID":"ses_run7","role":"assistant"},"parts":[{"type":"text","text":"full reply"}]}`))
+		case r.URL.Path == "/event":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			fl := w.(http.Flusher)
+			select {
+			case <-promptCh:
+			case <-r.Context().Done():
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+			// delta 只到了一部分（模拟丢帧）
+			_, _ = w.Write([]byte(sseTextDelta("ses_run7", assistantMsgID, "full re", 0) + sseStepEnded("ses_run7", assistantMsgID, 5)))
+			fl.Flush()
+			<-r.Context().Done()
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for ev := range out {
+		if ev.Kind() == HighEventResult {
+			if got := ev.Result(); got != "full reply" {
+				t.Errorf("Result() = %q, want 服务端落库文本 %q", got, "full reply")
+			}
+			return
+		}
+	}
+	t.Fatal("no HighEventResult")
 }
 
 // TestRun_StreamClosedCarriesText：订阅 chan 被关闭（stream.Close 触发）且未收到

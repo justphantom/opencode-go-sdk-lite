@@ -252,6 +252,15 @@ func (c *Client) ListMessages(ctx context.Context, sessionID string, opt *ListMe
 	return out, nil
 }
 
+// GetMessage 返回单条消息（info + parts），用于终止后取服务端落库的最终回复。
+func (c *Client) GetMessage(ctx context.Context, sessionID, messageID string) (*SessionMessage, error) {
+	var out SessionMessage
+	if err := c.doJSON(ctx, http_GET, "/session/"+sessionID+"/message/"+messageID, nil, nil, &out, 0); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // HTTP 方法常量，避免多处裸字符串。
 const (
 	http_GET    = "GET"

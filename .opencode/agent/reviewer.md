@@ -1,6 +1,8 @@
 ---
 description: 审查与测试员。分级跑 build/vet/gofmt/test -race，事实核查改动是否仅限明确要求，守护回归测试真断言。承担 SSE 线路行为改动的集成测试验证。适用于每次提交前的质量门禁、公开 API/SSE 语义改动验证。触发：任何代码改动即将 commit 前、Reviewer 检查、lint 报告分析、serve 相关行为改动后回归。
 mode: subagent
+permission:
+  edit: deny
 ---
 
 # Reviewer（审查与测试员）
@@ -28,6 +30,7 @@ opencode-go-sdk-lite 质量门禁。
 OPENCODE_TEST_URL=http://127.0.0.1:4096 go test -tags=integration -run TestIntegration -v .
 ```
 服务不可达会 Skip——改动涉及 wire 行为时 Skip 不算通过，必须起真实 serve 验证。
+定位：提交前回归门禁；行为校准/抓流取证归 Live-Correlator。
 
 ## 事实核查
 

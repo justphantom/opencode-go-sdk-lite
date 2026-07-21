@@ -34,6 +34,7 @@ OPENCODE_TEST_URL=http://127.0.0.1:4096 go test -tags=integration -run TestInteg
 # 手动抓 SSE 流
 curl -N http://127.0.0.1:4096/event?directory=/repo
 ```
+定位：此处集成测试用于行为校准与抓流取证；提交前回归门禁归 Reviewer。
 
 ## 已实测确认的事实（勿重复验证，除非 serve 升级）
 

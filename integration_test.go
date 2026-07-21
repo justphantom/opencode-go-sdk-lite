@@ -56,6 +56,7 @@ func TestIntegration(t *testing.T) {
 	t.Run("SkillCommand", func(t *testing.T) { testSkillCommand(t, c) })
 	t.Run("UpdateSession", func(t *testing.T) { testUpdateSessionLive(t, c) })
 	t.Run("SessionStatuses", func(t *testing.T) { testSessionStatuses(t, c) })
+	t.Run("RunResultMatchesHistory", func(t *testing.T) { testRunResultMatchesHistory(t, c) })
 	t.Run("ToolKindLive", func(t *testing.T) { testToolKindLive(t, c) })
 	t.Run("PermissionReplyLive", func(t *testing.T) { testPermissionReplyLive(t, c) })
 	t.Run("QuestionReplyLive", func(t *testing.T) { testQuestionReplyLive(t, c) })
@@ -115,6 +116,43 @@ func testMetadata(t *testing.T, c *Client) {
 	t.Logf("models with context=%d with variants=%d", withCtx, withVariants)
 	if _, err := c.ListProviders(ctx, nil); err != nil {
 		t.Fatalf("ListProviders: %v", err)
+	}
+}
+
+// testRunResultMatchesHistory 验证 Run 的 HighEventResult.Result()
+// 与服务端落库文本（GetMessage.FinalText）一致。
+func testRunResultMatchesHistory(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	stream, err := c.NewGlobalEventStream(ctx, nil)
+	if err != nil {
+		t.Fatalf("NewGlobalEventStream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "只回复两个字：好的"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var result HighEvent
+	for ev := range out {
+		if ev.Kind() == HighEventResult {
+			result = ev
+		}
+	}
+	if result.Kind() != HighEventResult {
+		t.Fatal("未收到 HighEventResult")
+	}
+	t.Cleanup(func() { _ = c.DeleteSession(context.Background(), result.SessionID()) })
+
+	m, err := c.GetMessage(ctx, result.SessionID(), result.MessageID())
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if want := m.FinalText(); result.Result() != want {
+		t.Errorf("Result() = %q, want 落库文本 %q", result.Result(), want)
 	}
 }
 

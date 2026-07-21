@@ -37,17 +37,14 @@ opencode-go-sdk-lite 默认入口。
 INTAKE → ROUTE → CORRELATE → GATEKEEP → BUILD → REVIEW → INTEGRATE → VERIFY → DONE
 ```
 适用：新 feature / 公开 API 改动 / SSE 或 HighEvent 语义改
+阶段归属：INTEGRATE = Reviewer 跑集成测试；VERIFY = Orchestrator 按闭环 DONE 清单确认。
 
-### 快速通道 1：内部实现改（4 阶段）
+### 快速通道（4 阶段）
 ```
 INTAKE → ROUTE → BUILD → REVIEW → DONE
 ```
-适用：不动导出符号、单文件 <50 行、已有测试
-
-### 快速通道 2：纯文档/chore（3 阶段）
-```
-INTAKE → ROUTE → BUILD → REVIEW → DONE
-```
+适用：不动导出符号的内部小改（单文件 <50 行、已有测试）/ 纯文档 / chore。
+注：通道阈值（<50 行）看改动面，Reviewer 分级阈值（<10/≥10 行）看检查强度，两者口径独立。
 
 ## 硬路径（不可省）
 

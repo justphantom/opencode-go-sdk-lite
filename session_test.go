@@ -434,6 +434,25 @@ func TestDeleteSession_falseIsError(t *testing.T) {
 	}
 }
 
+func TestGetMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/session/ses_1/message/msg_1" || r.Method != "GET" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"info":{"id":"msg_1","sessionID":"ses_1","role":"assistant"},"parts":[{"type":"text","text":"hello"},{"type":"text","text":" world","synthetic":true}]}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	m, err := c.GetMessage(context.Background(), "ses_1", "msg_1")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if got := m.FinalText(); got != "hello" {
+		t.Errorf("FinalText() = %q, want %q（synthetic 应被过滤）", got, "hello")
+	}
+}
+
 func TestSessionStatuses(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/session/status" || r.Method != "GET" {
