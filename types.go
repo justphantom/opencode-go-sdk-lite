@@ -32,24 +32,30 @@ func (w PromptModelRef) toModelRef() *ModelRef {
 
 // ============ Prompt ============
 
-// PromptPart 是 prompt_async parts 的元素；当前仅覆盖 text，其余类型用 Raw 透传。
+// PromptPart 是 prompt_async parts 的元素。
+// text 类型填 Text；file 类型（附件）填 Mime/URL（Filename 可选）。
 // ID 留空时由 SDK 生成（prt_ 前缀），见 Client.Prompt。
 type PromptPart struct {
-	ID   string `json:"id,omitempty"`
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Mime     string `json:"mime,omitempty"`
+	Filename string `json:"filename,omitempty"`
+	URL      string `json:"url,omitempty"`
 }
 
 // PromptReq 对应 POST /session/{id}/prompt_async 的请求体。
 // MessageID 留空时由 SDK 生成（msg_ 前缀），生成结果经 PromptAck 回传。
+// Tools 是工具开关（工具名 → 是否启用），见 spec message body.tools。
 type PromptReq struct {
-	MessageID string       `json:"-"`
-	Model     *ModelRef    `json:"-"`
-	Agent     string       `json:"agent,omitempty"`
-	NoReply   bool         `json:"noReply,omitempty"`
-	System    string       `json:"system,omitempty"`
-	Variant   string       `json:"variant,omitempty"`
-	Parts     []PromptPart `json:"parts"`
+	MessageID string            `json:"-"`
+	Model     *ModelRef         `json:"-"`
+	Agent     string            `json:"agent,omitempty"`
+	NoReply   bool              `json:"noReply,omitempty"`
+	System    string            `json:"system,omitempty"`
+	Variant   string            `json:"variant,omitempty"`
+	Tools     map[string]bool   `json:"tools,omitempty"`
+	Parts     []PromptPart      `json:"parts"`
 }
 
 // PromptAck 是 Prompt 的回执：prompt_async 返 204 无 body，

@@ -162,6 +162,40 @@ func TestPrompt_success(t *testing.T) {
 	}
 }
 
+func TestPrompt_toolsAndFilePart(t *testing.T) {
+	var gotBody struct {
+		Tools map[string]bool `json:"tools"`
+		Parts []PromptPart    `json:"parts"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	_, err := c.Prompt(context.Background(), "ses_1", &PromptReq{
+		Tools: map[string]bool{"bash": false, "read": true},
+		Parts: []PromptPart{
+			{Type: "text", Text: "看附件"},
+			{Type: "file", Mime: "text/plain", Filename: "a.txt", URL: "data:text/plain;base64,aGk="},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if gotBody.Tools["bash"] != false || gotBody.Tools["read"] != true || len(gotBody.Tools) != 2 {
+		t.Errorf("wire tools = %+v", gotBody.Tools)
+	}
+	if len(gotBody.Parts) != 2 {
+		t.Fatalf("wire parts = %+v", gotBody.Parts)
+	}
+	fp := gotBody.Parts[1]
+	if fp.Type != "file" || fp.Mime != "text/plain" || fp.Filename != "a.txt" || fp.URL == "" {
+		t.Errorf("wire file part = %+v", fp)
+	}
+}
+
 func TestPrompt_respectsGivenIDs(t *testing.T) {
 	var gotBody struct {
 		MessageID string       `json:"messageID"`
