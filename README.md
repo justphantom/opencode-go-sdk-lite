@@ -3,9 +3,9 @@
 opencode v1 HTTP API 的轻量 Go SDK，纯标准库实现。
 
 覆盖范围：
-- 会话发起（创建 / prompt / 中断 / 历史；agent/model 随 prompt body 指定）
+- 会话管理（创建 / 查询 / 更新 / 删除）与对话发起（prompt / 中断 / 历史；agent/model 随 prompt body 指定）
 - SSE 订阅（过程消息、权限请求、问题请求、最终回复）+ 自动断线重连
-- 可用模型 / provider 查询
+- 可用模型 / provider / agent / skill / 命令查询
 - 权限与问题应答
 
 ## 安装
@@ -38,6 +38,7 @@ go get github.com/justphantom/opencode-go-sdk-lite
 | `DeleteSession(ctx, id)` | `DELETE /session/{id}` | 返回 false 视为错误 |
 | `Prompt(ctx, id, *PromptReq) (*PromptAck, error)` | `POST /session/{id}/prompt_async` | 204 无 body；messageID/partID 由 SDK 生成并经 ack 回传 |
 | `Interrupt(ctx, id)` | `POST /session/{id}/abort` | 空闲时为 no-op |
+| `UpdateSession(ctx, id, *UpdateSessionReq)` | `PATCH /session/{id}` | 改标题/元数据/归档时间，返回更新后会话 |
 | `ListMessages(ctx, id, *ListMessagesOpt)` | `GET /session/{id}/message` | 元素为 `{info, parts}` |
 
 ### Client / Agent / Health — `client.go` / `agent.go`
@@ -46,6 +47,8 @@ go get github.com/justphantom/opencode-go-sdk-lite
 |---|---|---|
 | `Health(ctx)` | `GET /global/health` | 响应 `{healthy:true}` |
 | `ListAgents(ctx, *LocationRef)` | `GET /agent` | 定位参数为平铺 query（directory/workspace） |
+| `ListSkills(ctx, *LocationRef)` | `GET /skill` | 可用 skill（name/description/location/content） |
+| `ListCommands(ctx, *LocationRef)` | `GET /command` | 可用命令（source ∈ command/mcp/skill） |
 
 ### SSE 订阅与断线重连 — `event.go` / `sse.go` / `globalstream.go`
 
@@ -54,7 +57,7 @@ go get github.com/justphantom/opencode-go-sdk-lite
 | `SessionEvents(ctx, id, *SessionEventsOpt)` 返回 `(<-chan Event, <-chan error)` | `GET /event` | 全局流按 sessionID 过滤；无续传 |
 | `NewGlobalEventStream(ctx, *LocationRef)` 返回 `*GlobalEventStream` | `GET /event` | 按 sessionID 路由的全局连接 |
 | `stream.Subscribe(sessionID)` / `Unsubscribe(id)` / `Close()` | （基于上一行） | 多路复用 |
-| `Run(ctx, stream, RunOptions)` 返回 `<-chan HighEvent` | 串联 prompt + 订阅 + 过滤 + 合成终止 | 详见「高层 Run + HighEvent」段 |
+| `Run(ctx, stream, RunOptions)` 返回 `(<-chan HighEvent, error)` | 串联 prompt + 订阅 + 过滤 + 合成终止 | 详见「高层 Run + HighEvent」段 |
 
 **SessionEvents**：连接全局 `/event` 后按 sessionID 过滤；指数退避（默认 500ms→30s）；
 4xx（除 429）视为不可恢复写 errc 后停止。无续传，断连窗口的事件会丢失。
@@ -70,7 +73,11 @@ go get github.com/justphantom/opencode-go-sdk-lite
 `session.*` / `permission.asked` / `question.asked` 等；实测不产生 `session.next.*` 事件）。
 `Event.Properties` 为原始 JSON，调用方按 `Type` 自行反序列化；高频事件附 struct：
 `PartDeltaData` / `PartUpdatedData` / `MessageUpdatedData` / `PermissionAskedData` /
-`QuestionAskedData` / `SessionIdleData` / `SessionErrorData`。
+`QuestionAskedData` / `SessionIdleData` / `SessionErrorData` / `TodoUpdatedData`。
+
+工具调用事件可用 `ClassifyTool(name)` 归类：file_read / file_write / shell / search /
+webfetch / mcp / subagent / todo / other（MCP 工具无统一前缀，归类为尽力而为）；
+`Run` 产出的 tool_use / tool_result 事件经 `ToolKind()` 直接读取。
 
 ### 可用模型与 Provider — `model.go`
 
@@ -234,7 +241,7 @@ for ev := range ch {
 ## 高层 Run + HighEvent（推荐）
 
 `Run` 把「创建/复用 session → 订阅全局流 → 发 prompt_async → 按 assistantMessageID 过滤 → 合成终止事件」打包，
-把原始事件归纳为 10 种 `HighEventKind`，channel close 前必有终止事件（result/error）。
+把原始事件归纳为 9 种 `HighEventKind`，channel close 前必有终止事件（result/error）。
 首事件必为 `HighEventPrompt`（携带 SDK 生成的 user messageID 与 sessionID）。
 
 ```go
@@ -281,12 +288,14 @@ for ev := range out {
 | `client.ListAgents(ctx, *LocationRef)` | 列出 agent（build/plan/explore...） |
 | `client.DeleteSession(ctx, id)` | 删除会话 |
 | `GenerateMessageID()` / `GeneratePartID()` | 生成 `msg_`/`prt_` 前缀 id，NTP 回拨安全；`Prompt` 内部自动调用，仅需要预关联时手动用 |
+| `ClassifyTool(name)` | 工具名归类（file_read/file_write/shell/search/webfetch/mcp/subagent/todo/other） |
+| `NewHighEvent(...)` | 构造 HighEvent；仅供外部包测试 fake 用，业务代码不应调用 |
 | `PromptAck` | `Prompt` 回执；prompt_async 返 204 无 body，ack 的 `MessageID`/`PartIDs` 是关联后续 SSE 事件的唯一句柄 |
 
 ## 约束
 
 - 零第三方依赖，仅标准库
-- 原始事件：`Type` 常量 + `Data json.RawMessage`（不做 88 事件强类型 union，仅高频事件附 `*Data` struct）
-- 高层事件：`HighEventKind` 10 种 + Getter（封装在 `Run`）
+- 原始事件：`Type` 常量 + `Properties json.RawMessage`（不做 88 事件强类型 union，仅高频事件附 `*Data` struct）
+- 高层事件：`HighEventKind` 9 种 + Getter（封装在 `Run`）
 - 全局流不支持续传，断连窗口事件丢失
 - 其他未覆盖接口见「接口清单 → 非目标」
