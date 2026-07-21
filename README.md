@@ -33,7 +33,7 @@ go get github.com/justphantom/opencode-go-sdk-lite
 | Go API | HTTP | 说明 |
 |---|---|---|
 | `CreateSession(ctx, *CreateSessionReq)` | `POST /session` | Directory 走平铺 query，其余进 body |
-| `ListSessions(ctx, *ListSessionsOpt)` | `GET /session` | 裸数组，无游标分页 |
+| `ListSessions(ctx, *ListSessionsOpt)` | `GET /session` | 裸数组无游标；serve 默认 limit=100 会截断，SDK 默认上送 limit=200，更多需显式 Limit |
 | `GetSession(ctx, sessionID)` | `GET /session/{id}` | |
 | `DeleteSession(ctx, id)` | `DELETE /session/{id}` | 返回 false 视为错误 |
 | `Prompt(ctx, id, *PromptReq) (*PromptAck, error)` | `POST /session/{id}/prompt_async` | 204 无 body；messageID/partID 由 SDK 生成并经 ack 回传；支持 model/agent/variant/system/tools 开关与 text/file 附件 part |

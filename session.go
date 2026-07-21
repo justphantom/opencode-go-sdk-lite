@@ -7,18 +7,23 @@ import (
 	"strings"
 )
 
+// serve 1.18.4 实测：GET /session 有未文档化默认 limit=100，超过即截断，
+// 无游标无 total 无法翻页，故 SDK 默认上送 200 放宽截断阈值。
+const defaultListSessionsLimit = 200
+
 // ListSessionsOpt 是 GET /session 的查询参数。
 type ListSessionsOpt struct {
 	Directory string
 	Workspace string
 	Scope     string
 	Search    string
-	Limit     int
+	Limit     int // <=0 时用 defaultListSessionsLimit
 }
 
 func (o *ListSessionsOpt) toQuery() url.Values {
 	q := url.Values{}
 	if o == nil {
+		q.Set("limit", fmt.Sprintf("%d", defaultListSessionsLimit))
 		return q
 	}
 	if o.Directory != "" {
@@ -33,13 +38,16 @@ func (o *ListSessionsOpt) toQuery() url.Values {
 	if o.Search != "" {
 		q.Set("search", o.Search)
 	}
-	if o.Limit > 0 {
-		q.Set("limit", fmt.Sprintf("%d", o.Limit))
+	limit := o.Limit
+	if limit <= 0 {
+		limit = defaultListSessionsLimit
 	}
+	q.Set("limit", fmt.Sprintf("%d", limit))
 	return q
 }
 
-// ListSessions 列出 session。V1 无游标分页，一次返回全部（可用 Limit 截断）。
+// ListSessions 列出 session。serve 无游标分页且默认 limit=100 会静默截断，
+// SDK 默认上送 limit=200；会话数超过 200 需显式传更大 Limit。
 func (c *Client) ListSessions(ctx context.Context, opt *ListSessionsOpt) ([]SessionInfo, error) {
 	var out []SessionInfo
 	if err := c.doJSON(ctx, http_GET, "/session", opt.toQuery(), nil, &out, 0); err != nil {

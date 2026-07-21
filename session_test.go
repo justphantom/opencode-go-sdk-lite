@@ -540,6 +540,9 @@ func TestListSessions(t *testing.T) {
 		if got := r.URL.Query().Get("directory"); got != "/repo" {
 			t.Errorf("directory = %q", got)
 		}
+		if got := r.URL.Query().Get("limit"); got != "200" {
+			t.Errorf("limit = %q, want 200", got)
+		}
 		_, _ = w.Write([]byte(`[` + sessionFixture + `]`))
 	}))
 	defer srv.Close()
@@ -551,5 +554,43 @@ func TestListSessions(t *testing.T) {
 	}
 	if len(ss) != 1 || ss[0].ID != "ses_1" {
 		t.Errorf("sessions = %+v", ss)
+	}
+}
+
+func TestListSessions_defaultLimit(t *testing.T) {
+	for name, opt := range map[string]*ListSessionsOpt{
+		"nil":      nil,
+		"zero":     {Limit: 0},
+		"negative": {Limit: -3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.Query().Get("limit"); got != "200" {
+					t.Errorf("limit = %q, want 200", got)
+				}
+				_, _ = w.Write([]byte(`[]`))
+			}))
+			defer srv.Close()
+
+			c, _ := New(srv.URL)
+			if _, err := c.ListSessions(context.Background(), opt); err != nil {
+				t.Fatalf("ListSessions: %v", err)
+			}
+		})
+	}
+}
+
+func TestListSessions_explicitLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("limit"); got != "50" {
+			t.Errorf("limit = %q, want 50", got)
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	if _, err := c.ListSessions(context.Background(), &ListSessionsOpt{Limit: 50}); err != nil {
+		t.Fatalf("ListSessions: %v", err)
 	}
 }
