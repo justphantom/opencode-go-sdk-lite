@@ -58,6 +58,9 @@ func TestIntegration(t *testing.T) {
 	t.Run("ToolKindLive", func(t *testing.T) { testToolKindLive(t, c) })
 	t.Run("PermissionReplyLive", func(t *testing.T) { testPermissionReplyLive(t, c) })
 	t.Run("QuestionReplyLive", func(t *testing.T) { testQuestionReplyLive(t, c) })
+	t.Run("PromptFileLive", func(t *testing.T) { testPromptFileLive(t, c) })
+	t.Run("PromptToolsDisabledLive", func(t *testing.T) { testPromptToolsDisabledLive(t, c) })
+	t.Run("FinalTextLive", func(t *testing.T) { testFinalTextLive(t, c) })
 }
 
 func testHealth(t *testing.T, c *Client) {
@@ -715,6 +718,147 @@ func testQuestionReplyLive(t *testing.T, c *Client) {
 				t.Skipf("超时且未触发 question.asked，跳过")
 			}
 			return
+		}
+	}
+}
+
+// testPromptFileLive 发送 text+file 附件，断言服务端落库的历史含 file part。
+func testPromptFileLive(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ses, err := c.CreateSession(ctx, &CreateSessionReq{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = c.DeleteSession(context.Background(), ses.ID) })
+
+	ack, err := c.Prompt(ctx, ses.ID, &PromptReq{
+		Parts: []PromptPart{
+			{Type: "text", Text: "附件是一句话，请原样复述附件内容"},
+			{Type: "file", Mime: "text/plain", Filename: "note.txt", URL: "data:text/plain;base64,c2RrLWZpbGUtcGFydC10ZXN0"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Prompt(file): %v", err)
+	}
+	if len(ack.PartIDs) != 2 {
+		t.Errorf("ack.PartIDs = %v, want 2", ack.PartIDs)
+	}
+
+	// 等 agent-loop 落定再查历史
+	time.Sleep(3 * time.Second)
+	msgs, err := c.ListMessages(ctx, ses.ID, nil)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var user *SessionMessage
+	for i := range msgs {
+		if msgs[i].Info.ID == ack.MessageID {
+			user = &msgs[i]
+		}
+	}
+	if user == nil {
+		t.Fatalf("历史中未找到 user 消息 %s", ack.MessageID)
+	}
+	foundFile := false
+	for _, raw := range user.Parts {
+		var p Part
+		if json.Unmarshal(raw, &p) == nil && p.Type == "file" {
+			foundFile = true
+		}
+	}
+	if !foundFile {
+		t.Errorf("user 消息无 file part: %s", user.Parts)
+	}
+}
+
+// testFinalTextLive 跑完一轮对话后用 FinalText 从历史重组最终回复（断连兜底路径）。
+func testFinalTextLive(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	stream, err := c.NewGlobalEventStream(ctx, nil)
+	if err != nil {
+		t.Fatalf("NewGlobalEventStream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "请只回复两个字：你好"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var sessionID string
+	var last HighEvent
+	for ev := range out {
+		if ev.Kind() == HighEventPrompt {
+			sessionID = ev.SessionID()
+		}
+		last = ev
+	}
+	if last.Kind() == HighEventError {
+		t.Skipf("模型不可用（%s），跳过", last.Result())
+	}
+
+	msgs, err := c.ListMessages(ctx, sessionID, nil)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var final string
+	for _, m := range msgs {
+		if m.Info.Role == "assistant" {
+			if txt := m.FinalText(); txt != "" {
+				final = txt
+			}
+		}
+	}
+	if !strings.Contains(final, "你好") {
+		t.Errorf("FinalText 重组结果 = %q, 期望含「你好」", final)
+	}
+}
+
+// testPromptToolsDisabledLive 禁用 bash 后发号施令，断言全程无 bash 工具调用。
+func testPromptToolsDisabledLive(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	ses, err := c.CreateSession(ctx, &CreateSessionReq{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = c.DeleteSession(context.Background(), ses.ID) })
+
+	subCtx, stopSub := context.WithCancel(ctx)
+	defer stopSub()
+	events, _ := c.SessionEvents(subCtx, ses.ID, nil)
+
+	if _, err := c.Prompt(ctx, ses.ID, &PromptReq{
+		Tools: map[string]bool{"bash": false},
+		Parts: []PromptPart{{Type: "text", Text: "请用 bash 执行 echo hi；若工具不可用就直接说明，然后结束"}},
+	}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			if ev.Type == EventMessagePartUpdated {
+				var d PartUpdatedData
+				if json.Unmarshal(ev.Properties, &d) == nil && d.Part.Type == "tool" && d.Part.Tool == "bash" {
+					t.Errorf("bash 已禁用仍被调用")
+				}
+			}
+			if ev.Type == EventSessionError {
+				t.Skipf("session.error（模型无凭证？），跳过")
+			}
+			if ev.Type == EventSessionIdle {
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("超时未收到 session.idle")
 		}
 	}
 }
