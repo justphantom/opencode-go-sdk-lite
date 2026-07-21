@@ -2,7 +2,7 @@ package opencode
 
 import "encoding/json"
 
-// HighEventKind 是高层事件的语义类别，对齐 lark-bridge event.go 的 10 个 kind。
+// HighEventKind 是高层事件的语义类别（9 种）。
 // 不同于原始 Event（V1 经典事件体系），HighEvent 把过程流归纳为少数可消费类别。
 type HighEventKind string
 
@@ -26,6 +26,7 @@ type HighEvent struct {
 	messageID    string // assistantMessageID；HighEventPrompt 里是 user messageID
 	text         string
 	toolName     string
+	toolKind     ToolKind
 	toolInput    string
 	isToolError  bool
 	result       string
@@ -43,6 +44,7 @@ func (e HighEvent) SessionID() string   { return e.sessionID }
 func (e HighEvent) MessageID() string   { return e.messageID }
 func (e HighEvent) Text() string        { return e.text }
 func (e HighEvent) ToolName() string    { return e.toolName }
+func (e HighEvent) ToolKind() ToolKind  { return e.toolKind }
 func (e HighEvent) ToolInput() string   { return e.toolInput }
 func (e HighEvent) IsToolError() bool   { return e.isToolError }
 func (e HighEvent) Result() string      { return e.result }
@@ -114,6 +116,7 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 					sessionID: d.SessionID,
 					messageID: p.MessageID,
 					toolName:  p.Tool,
+					toolKind:  ClassifyTool(p.Tool),
 					toolInput: string(jsonRawOrNil(p.State.Input)),
 				}, true, false
 			case "completed":
@@ -121,6 +124,8 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 					kind:      HighEventToolResult,
 					sessionID: d.SessionID,
 					messageID: p.MessageID,
+					toolName:  p.Tool,
+					toolKind:  ClassifyTool(p.Tool),
 					text:      p.State.Output,
 				}, true, false
 			case "error":
@@ -128,6 +133,8 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 					kind:        HighEventToolResult,
 					sessionID:   d.SessionID,
 					messageID:   p.MessageID,
+					toolName:    p.Tool,
+					toolKind:    ClassifyTool(p.Tool),
 					isToolError: true,
 					text:        p.State.Error,
 				}, true, false

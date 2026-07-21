@@ -111,6 +111,9 @@ func TestMapToHighEvent_Tool(t *testing.T) {
 	if !emit || he.Kind() != HighEventToolUse || he.ToolName() != "bash" {
 		t.Errorf("running: %+v", he)
 	}
+	if he.ToolKind() != ToolKindShell {
+		t.Errorf("running toolKind = %s, want shell", he.ToolKind())
+	}
 
 	completed := partUpdatedEvent(PartUpdatedData{SessionID: "ses_1", Part: Part{
 		ID: "prt_t", MessageID: "msg_a", Type: "tool", Tool: "bash",
@@ -128,6 +131,9 @@ func TestMapToHighEvent_Tool(t *testing.T) {
 	he, emit, _ = mapToHighEvent(errored, &assistantID, parts)
 	if !emit || he.Kind() != HighEventToolResult || !he.IsToolError() || he.Text() != "exit 1" {
 		t.Errorf("error: %+v", he)
+	}
+	if he.ToolKind() != ToolKindShell {
+		t.Errorf("error toolKind = %s, want shell", he.ToolKind())
 	}
 }
 
