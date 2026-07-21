@@ -149,6 +149,10 @@ func testSessionStatuses(t *testing.T, c *Client) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+
+	if err := c.DeleteSessionIfIdle(ctx, ses.ID); err == nil {
+		t.Error("busy 会话 DeleteSessionIfIdle 应返回错误")
+	}
 }
 
 // testSessionLifecycle 覆盖建/查/发/列/删全链路。

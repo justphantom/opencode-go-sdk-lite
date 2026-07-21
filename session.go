@@ -191,6 +191,20 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// DeleteSessionIfIdle 仅在会话非 busy 时删除。
+// busy 时拒绝且不发 DELETE；状态查询失败则透传错误，不降级强删。
+// 注意：状态查询与删除之间存在竞态，仅为尽力而为的前置检查。
+func (c *Client) DeleteSessionIfIdle(ctx context.Context, sessionID string) error {
+	st, err := c.SessionStatuses(ctx)
+	if err != nil {
+		return err
+	}
+	if st[sessionID].Type == "busy" {
+		return fmt.Errorf("opencode: session %s is busy", sessionID)
+	}
+	return c.DeleteSession(ctx, sessionID)
+}
+
 // SessionStatuses 返回所有会话的运行状态（GET /session/status）。
 // 键为 sessionID；空闲会话可能缺省，缺省即 idle。
 func (c *Client) SessionStatuses(ctx context.Context) (map[string]SessionStatus, error) {

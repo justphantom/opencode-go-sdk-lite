@@ -456,6 +456,63 @@ func TestSessionStatuses(t *testing.T) {
 	}
 }
 
+func TestDeleteSessionIfIdle_idle(t *testing.T) {
+	var deleted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/status":
+			_, _ = w.Write([]byte(`{"ses_1":{"type":"idle"}}`))
+		case "/session/ses_1":
+			deleted = true
+			_, _ = w.Write([]byte(`true`))
+		}
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	if err := c.DeleteSessionIfIdle(context.Background(), "ses_1"); err != nil {
+		t.Fatalf("DeleteSessionIfIdle: %v", err)
+	}
+	if !deleted {
+		t.Error("idle 会话应发出 DELETE")
+	}
+}
+
+func TestDeleteSessionIfIdle_busy(t *testing.T) {
+	var deleted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/status":
+			_, _ = w.Write([]byte(`{"ses_1":{"type":"busy"}}`))
+		case "/session/ses_1":
+			deleted = true
+			_, _ = w.Write([]byte(`true`))
+		}
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	if err := c.DeleteSessionIfIdle(context.Background(), "ses_1"); err == nil {
+		t.Fatal("busy 会话应返回错误")
+	}
+	if deleted {
+		t.Error("busy 会话不应发出 DELETE")
+	}
+}
+
+func TestDeleteSessionIfIdle_statusError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"type":"InternalError","message":"boom"}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	if err := c.DeleteSessionIfIdle(context.Background(), "ses_1"); err == nil {
+		t.Fatal("状态查询失败应透传错误")
+	}
+}
+
 func TestListSessions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/session" || r.Method != "GET" {
