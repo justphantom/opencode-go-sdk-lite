@@ -6,6 +6,7 @@ import "strings"
 // 区分读写文件、shell、搜索、网页抓取、MCP、subagent、todo 等类别。
 type ToolKind string
 
+// ToolKind 取值常量；行尾注释为各分类的覆盖范围。
 const (
 	ToolKindFileRead  ToolKind = "file_read"  // 读文件
 	ToolKindFileWrite ToolKind = "file_write" // 写/改文件

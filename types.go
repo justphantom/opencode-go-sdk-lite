@@ -51,14 +51,14 @@ type PromptPart struct {
 // MessageID 留空时由 SDK 生成（msg_ 前缀），生成结果经 PromptAck 回传。
 // Tools 是工具开关（工具名 → 是否启用），见 spec message body.tools。
 type PromptReq struct {
-	MessageID string            `json:"-"`
-	Model     *ModelRef         `json:"-"`
-	Agent     string            `json:"agent,omitempty"`
-	NoReply   bool              `json:"noReply,omitempty"`
-	System    string            `json:"system,omitempty"`
-	Variant   string            `json:"variant,omitempty"`
-	Tools     map[string]bool   `json:"tools,omitempty"`
-	Parts     []PromptPart      `json:"parts"`
+	MessageID string          `json:"-"`
+	Model     *ModelRef       `json:"-"`
+	Agent     string          `json:"agent,omitempty"`
+	NoReply   bool            `json:"noReply,omitempty"`
+	System    string          `json:"system,omitempty"`
+	Variant   string          `json:"variant,omitempty"`
+	Tools     map[string]bool `json:"tools,omitempty"`
+	Parts     []PromptPart    `json:"parts"`
 }
 
 // PromptAck 是 Prompt 的回执：prompt_async 返 204 无 body，
@@ -93,6 +93,7 @@ type SessionInfo struct {
 	Revert      *RevertState    `json:"revert,omitempty"`
 }
 
+// SessionTokens 是 Session/Message 的 token 用量统计。
 type SessionTokens struct {
 	Input     float64      `json:"input"`
 	Output    float64      `json:"output"`
@@ -100,6 +101,7 @@ type SessionTokens struct {
 	Cache     SessionCache `json:"cache"`
 }
 
+// SessionCache 是 token 用量的缓存命中部分。
 type SessionCache struct {
 	Read  float64 `json:"read"`
 	Write float64 `json:"write"`
@@ -113,12 +115,14 @@ type SessionTime struct {
 	Archived   int64 `json:"archived,omitempty"`
 }
 
+// SessionSummary 是 session 的代码改动统计。
 type SessionSummary struct {
 	Additions float64 `json:"additions"`
 	Deletions float64 `json:"deletions"`
 	Files     float64 `json:"files"`
 }
 
+// SessionShare 是 session 的分享链接。
 type SessionShare struct {
 	URL string `json:"url"`
 }
@@ -169,7 +173,7 @@ func (m SessionMessage) FinalText() string {
 		if err := json.Unmarshal(raw, &p); err != nil {
 			continue
 		}
-		if p.Type != "text" || p.Synthetic || p.Ignored {
+		if p.Type != PartTypeText || p.Synthetic || p.Ignored {
 			continue
 		}
 		b.WriteString(p.Text)
@@ -209,6 +213,7 @@ type ModelInfo struct {
 	Enabled      bool              `json:"-"`
 }
 
+// ModelAPI 是 provider 的 API 接入信息。
 type ModelAPI struct {
 	ID  string `json:"id"`
 	URL string `json:"url"`
@@ -226,6 +231,7 @@ type ModelCapabilities struct {
 	Output      map[string]bool `json:"output,omitempty"`
 }
 
+// ModelCost 是模型的单次计费（按 token 拆分，含缓存）。
 type ModelCost struct {
 	Input  float64 `json:"input"`
 	Output float64 `json:"output"`
@@ -235,6 +241,7 @@ type ModelCost struct {
 	} `json:"cache"`
 }
 
+// ModelLimit 是模型的上下文/输入/输出 token 上限。
 type ModelLimit struct {
 	Context int `json:"context"`
 	Input   int `json:"input,omitempty"`
@@ -307,6 +314,7 @@ type PermissionRequest struct {
 	Tool       *PermissionTool `json:"tool,omitempty"`
 }
 
+// PermissionTool 标记权限请求归属的工具调用。
 type PermissionTool struct {
 	MessageID string `json:"messageID"`
 	CallID    string `json:"callID"`
@@ -320,6 +328,7 @@ type QuestionRequest struct {
 	Tool      *QuestionTool  `json:"tool,omitempty"`
 }
 
+// QuestionInfo 是单个问题的结构（question.asked 的元素）。
 type QuestionInfo struct {
 	Question string           `json:"question"`
 	Header   string           `json:"header"`
@@ -328,17 +337,20 @@ type QuestionInfo struct {
 	Custom   bool             `json:"custom,omitempty"`
 }
 
+// QuestionOption 是问题的候选项。
 type QuestionOption struct {
 	Label       string `json:"label"`
 	Description string `json:"description"`
 }
 
+// QuestionTool 标记问题请求归属的工具调用。
 type QuestionTool struct {
 	MessageID string `json:"messageID"`
 	CallID    string `json:"callID"`
 }
 
-// QuestionReply.answers 与 questions 一一对应；每个元素是该问题的选中 label 列表。
+// QuestionReply 对应 question.reply 的 body；Answers 与 questions 一一对应，
+// 每个元素是该问题的选中 label 列表。
 type QuestionReply struct {
 	Answers [][]string `json:"answers"`
 }
@@ -436,6 +448,16 @@ type PartUpdatedData struct {
 	Time      int64  `json:"time"`
 }
 
+// Part.Type 取值常量。散落在 highevent.go/run.go/types.go 的判断里，
+// 提常量避免拼写漂移导致 part 路由失败。
+const (
+	PartTypeText       = "text"
+	PartTypeReasoning  = "reasoning"
+	PartTypeTool       = "tool"
+	PartTypeStepStart  = "step-start"
+	PartTypeStepFinish = "step-finish"
+)
+
 // Part 是消息的一个组成块。type 取值：text / reasoning / tool /
 // step-start / step-finish 等。tool 专有字段在 State。
 type Part struct {
@@ -468,6 +490,7 @@ type MessageUpdatedData struct {
 	Info      MessageInfo `json:"info"`
 }
 
+// StepTokens 是单个 step 的 token 用量（step.ended 携带）。
 type StepTokens struct {
 	Input     float64   `json:"input"`
 	Output    float64   `json:"output"`
@@ -475,6 +498,7 @@ type StepTokens struct {
 	Cache     StepCache `json:"cache"`
 }
 
+// StepCache 是 step 级 token 用量的缓存命中部分。
 type StepCache struct {
 	Read  float64 `json:"read"`
 	Write float64 `json:"write"`
@@ -498,10 +522,12 @@ type QuestionAskedData struct {
 	Tool      *QuestionTool  `json:"tool,omitempty"`
 }
 
+// SessionIdleData 是 session.idle 的 data；turn 结束兜底信号。
 type SessionIdleData struct {
 	SessionID string `json:"sessionID"`
 }
 
+// SessionErrorData 是 session.error 的 data；Error 字段至少含 message。
 type SessionErrorData struct {
 	SessionID string         `json:"sessionID"`
 	Error     map[string]any `json:"error"`

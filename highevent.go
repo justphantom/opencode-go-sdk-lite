@@ -78,13 +78,13 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 			parts[p.ID] = p.Type
 		}
 		switch p.Type {
-		case "step-start":
+		case PartTypeStepStart:
 			// 只在 assistant 专属 part 上锁定 assistantID：
 			// part.updated 也会回显用户输入的 text part（MessageID 是 user 消息），
 			// 抢锁会把后续 assistant delta 全部过滤掉（实测踩坑）。
 			trackAssistantID(assistantID, p.MessageID)
 			return HighEvent{kind: HighEventStepStart, sessionID: d.SessionID, messageID: p.MessageID}, true, false
-		case "step-finish":
+		case PartTypeStepFinish:
 			trackAssistantID(assistantID, p.MessageID)
 			// reason="stop" 是成功终止；其他 reason（如 tool-calls）按 step_finish 报告。
 			// result 字段留空，由 pump 在关闭 chan 前回填累积的 text delta。
@@ -104,7 +104,7 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 			he.kind = HighEventStepFinish
 			he.result = p.Reason
 			return he, true, false
-		case "tool":
+		case PartTypeTool:
 			trackAssistantID(assistantID, p.MessageID)
 			if p.State == nil {
 				return HighEvent{}, false, false
@@ -150,7 +150,7 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 		trackAssistantID(assistantID, d.MessageID)
 		// part 类型未知（delta 先于 part.updated 到达）时按 text 处理，
 		// 与实测时序（part.updated 先达）一致。
-		if parts[d.PartID] == "reasoning" {
+		if parts[d.PartID] == PartTypeReasoning {
 			return HighEvent{kind: HighEventThinking, sessionID: d.SessionID, messageID: d.MessageID, text: d.Delta}, true, false
 		}
 		return HighEvent{kind: HighEventText, sessionID: d.SessionID, messageID: d.MessageID, text: d.Delta}, true, false

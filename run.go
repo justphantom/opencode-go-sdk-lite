@@ -54,7 +54,7 @@ func (c *Client) Run(ctx context.Context, stream *GlobalEventStream, opts RunOpt
 	req := &PromptReq{
 		Agent: opts.Agent,
 		Model: opts.Model,
-		Parts: []PromptPart{{Type: "text", Text: opts.Prompt}},
+		Parts: []PromptPart{{Type: PartTypeText, Text: opts.Prompt}},
 	}
 
 	// 先订阅再发 prompt，避免漏掉 turn 的首帧事件
