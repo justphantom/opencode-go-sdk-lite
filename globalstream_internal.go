@@ -55,6 +55,9 @@ func (s *GlobalEventStream) cancelConn() {
 	if s.connCancel != nil {
 		s.connCancel()
 	}
+	if s.cancelConnHook != nil {
+		s.cancelConnHook()
+	}
 }
 
 // recoverPanic 吞掉 panic 防止 goroutine 崩溃传播。

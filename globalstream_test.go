@@ -101,6 +101,7 @@ func TestGlobalStream_UnsubscribeClosesChan(t *testing.T) {
 	for range ch {
 	}
 }
+
 // TestGlobalStream_StepFinishTerminalUnderFullChan（EDGE-1 回归）：
 // 订阅 chan 填满后投递 step-finish(reason=stop)，必须阻塞送达而非被丢。
 // 修复前：isTerminalEvent 不认 step-finish → 走"满则丢"分支 → 终止信号丢失。
@@ -192,6 +193,8 @@ func TestIsTerminalEvent_StepFinish(t *testing.T) {
 }
 
 // TestGlobalStream_HeartbeatForcesReconnect: backdate lastHeartbeat 触发 cancelConn。
+// 通过 cancelConnHook 真断言 watchdog 至少触发了一次 cancelConn（TEST-1）。
+// 修复前：cancelCount 从未 Add，测试只 sleep 300ms 不验证任何事。
 func TestGlobalStream_HeartbeatForcesReconnect(t *testing.T) {
 	// 用极短 heartbeatTimeout 让 watchdog 快速触发
 	prev := heartbeatTimeout
@@ -212,17 +215,23 @@ func TestGlobalStream_HeartbeatForcesReconnect(t *testing.T) {
 	s, _ := c.NewGlobalEventStream(ctx, nil)
 	defer func() { _ = s.Close() }()
 
-	// hook cancelConn 计数（通过观察连接被中断——服务端 ctx done 即代表被 cancel）
+	// 注入 hook：每次 cancelConn 被调用计数 +1
+	s.cancelConnHook = func() { atomic.AddInt32(&cancelCount, 1) }
+
 	// backdate heartbeat 让 watchdog 下个 tick 触发
 	s.lastHeartbeatMu.Lock()
 	s.lastHeartbeat = time.Now().Add(-1 * time.Hour)
 	s.lastHeartbeatMu.Unlock()
 
-	// 给 watchdog 几个 tick 时间
-	time.Sleep(300 * time.Millisecond)
-	// 若 cancelConn 工作，连接上下文会被取消，run 进入重连。
-	// 用原子计数无法直接观测；通过 stream 仍在运行（没崩）作为间接验证。
-	atomic.LoadInt32(&cancelCount) // 占位，避免 unused
+	// 给 watchdog 几个 tick 时间（timeout=50ms，5 个 tick = 250ms）
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&cancelCount) < 1 {
+		select {
+		case <-deadline:
+			t.Fatalf("watchdog 未触发 cancelConn：cancelCount=%d（应 ≥1）", atomic.LoadInt32(&cancelCount))
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 // TestGlobalStream_ReconnectAfterDrop: 第一次连接发 1 帧后断开，

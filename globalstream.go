@@ -35,6 +35,10 @@ type GlobalEventStream struct {
 	connCancelMu sync.Mutex
 	connCancel   context.CancelFunc
 
+	// cancelConnHook 测试可注入；生产为 nil。用于在心跳 watchdog 触发 cancelConn
+	// 时做可观测断言（TEST-1）。不属于公开 API。
+	cancelConnHook func()
+
 	heartbeatDone chan struct{}
 }
 
