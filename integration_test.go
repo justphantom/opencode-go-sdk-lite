@@ -55,6 +55,7 @@ func TestIntegration(t *testing.T) {
 	t.Run("GlobalStreamRun", func(t *testing.T) { testGlobalStreamRun(t, c) })
 	t.Run("SkillCommand", func(t *testing.T) { testSkillCommand(t, c) })
 	t.Run("UpdateSession", func(t *testing.T) { testUpdateSessionLive(t, c) })
+	t.Run("SessionStatuses", func(t *testing.T) { testSessionStatuses(t, c) })
 	t.Run("ToolKindLive", func(t *testing.T) { testToolKindLive(t, c) })
 	t.Run("PermissionReplyLive", func(t *testing.T) { testPermissionReplyLive(t, c) })
 	t.Run("QuestionReplyLive", func(t *testing.T) { testQuestionReplyLive(t, c) })
@@ -114,6 +115,39 @@ func testMetadata(t *testing.T, c *Client) {
 	t.Logf("models with context=%d with variants=%d", withCtx, withVariants)
 	if _, err := c.ListProviders(ctx, nil); err != nil {
 		t.Fatalf("ListProviders: %v", err)
+	}
+}
+
+// testSessionStatuses 验证 prompt 后会话进入 busy，落定后离开 busy。
+func testSessionStatuses(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ses, err := c.CreateSession(ctx, &CreateSessionReq{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = c.DeleteSession(context.Background(), ses.ID) })
+
+	if _, err := c.Prompt(ctx, ses.ID, &PromptReq{
+		Parts: []PromptPart{{Type: "text", Text: "从 1 数到 100，每个数字一行"}},
+	}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		st, err := c.SessionStatuses(ctx)
+		if err != nil {
+			t.Fatalf("SessionStatuses: %v", err)
+		}
+		if st[ses.ID].Type == "busy" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等待 busy 超时，statuses = %+v", st)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 

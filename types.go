@@ -93,6 +93,12 @@ type SessionInfo struct {
 	Revert      *RevertState    `json:"revert,omitempty"`
 }
 
+// SessionStatus 是 GET /session/status 的单会话状态。
+// 不在返回 map 中的会话视为 idle。
+type SessionStatus struct {
+	Type string `json:"type"` // idle | busy | retry
+}
+
 // SessionTokens 是 Session/Message 的 token 用量统计。
 type SessionTokens struct {
 	Input     float64      `json:"input"`

@@ -191,6 +191,16 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// SessionStatuses 返回所有会话的运行状态（GET /session/status）。
+// 键为 sessionID；空闲会话可能缺省，缺省即 idle。
+func (c *Client) SessionStatuses(ctx context.Context) (map[string]SessionStatus, error) {
+	var out map[string]SessionStatus
+	if err := c.doJSON(ctx, http_GET, "/session/status", nil, nil, &out, 0); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ListMessagesOpt 是 GET /session/{id}/message 的查询参数。
 type ListMessagesOpt struct {
 	Directory string

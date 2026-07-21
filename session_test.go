@@ -434,6 +434,28 @@ func TestDeleteSession_falseIsError(t *testing.T) {
 	}
 }
 
+func TestSessionStatuses(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/session/status" || r.Method != "GET" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"ses_1":{"type":"busy"},"ses_2":{"type":"retry"}}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	st, err := c.SessionStatuses(context.Background())
+	if err != nil {
+		t.Fatalf("SessionStatuses: %v", err)
+	}
+	if st["ses_1"].Type != "busy" || st["ses_2"].Type != "retry" {
+		t.Errorf("statuses = %+v", st)
+	}
+	if _, ok := st["ses_idle"]; ok {
+		t.Error("idle 会话不应出现在 map 中")
+	}
+}
+
 func TestListSessions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/session" || r.Method != "GET" {
