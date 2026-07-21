@@ -305,6 +305,56 @@ func TestHealth_serverError(t *testing.T) {
 	}
 }
 
+func TestUpdateSession(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		_, _ = w.Write([]byte(`{"id":"ses_1","projectID":"p","directory":"/repo","title":"新标题","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":2}}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ses, err := c.UpdateSession(context.Background(), "ses_1", &UpdateSessionReq{Title: "新标题"})
+	if err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+	if gotMethod != "PATCH" || gotPath != "/session/ses_1" {
+		t.Errorf("got %s %s, want PATCH /session/ses_1", gotMethod, gotPath)
+	}
+	if gotBody != `{"title":"新标题"}` {
+		t.Errorf("body = %s", gotBody)
+	}
+	if ses.Title != "新标题" {
+		t.Errorf("title = %q", ses.Title)
+	}
+}
+
+func TestUpdateSession_archived(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		_, _ = w.Write([]byte(`{"id":"ses_1","projectID":"p","directory":"/repo","title":"","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":2,"archived":1735689600000}}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ses, err := c.UpdateSession(context.Background(), "ses_1", &UpdateSessionReq{Archived: 1735689600000})
+	if err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+	if gotBody != `{"time":{"archived":1735689600000}}` {
+		t.Errorf("body = %s", gotBody)
+	}
+	if ses.Time.Archived != 1735689600000 {
+		t.Errorf("archived = %d", ses.Time.Archived)
+	}
+}
+
 func TestDeleteSession(t *testing.T) {
 	var gotPath, gotMethod string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

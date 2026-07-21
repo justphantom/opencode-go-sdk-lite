@@ -146,6 +146,37 @@ func (c *Client) Interrupt(ctx context.Context, sessionID string) error {
 	return c.doEmpty(ctx, http_POST, "/session/"+sessionID+"/abort", nil, nil, 200)
 }
 
+// UpdateSessionReq 是 PATCH /session/{id} 的请求体；零值字段不上送。
+type UpdateSessionReq struct {
+	Title    string         `json:"title,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+	Archived int64          `json:"-"` // 毫秒时间戳；>0 时上送 time.archived
+}
+
+// UpdateSession 更新会话标题/元数据/归档时间，返回更新后的会话。
+func (c *Client) UpdateSession(ctx context.Context, sessionID string, req *UpdateSessionReq) (*SessionInfo, error) {
+	if req == nil {
+		req = &UpdateSessionReq{}
+	}
+	body := struct {
+		Title    string         `json:"title,omitempty"`
+		Metadata map[string]any `json:"metadata,omitempty"`
+		Time     *struct {
+			Archived int64 `json:"archived"`
+		} `json:"time,omitempty"`
+	}{Title: req.Title, Metadata: req.Metadata}
+	if req.Archived > 0 {
+		body.Time = &struct {
+			Archived int64 `json:"archived"`
+		}{Archived: req.Archived}
+	}
+	var out SessionInfo
+	if err := c.doJSON(ctx, http_PATCH, "/session/"+sessionID, nil, body, &out, 0); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // DeleteSession 删除会话。
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	var ok bool
@@ -199,5 +230,6 @@ func (c *Client) ListMessages(ctx context.Context, sessionID string, opt *ListMe
 const (
 	http_GET    = "GET"
 	http_POST   = "POST"
+	http_PATCH  = "PATCH"
 	http_DELETE = "DELETE"
 )
