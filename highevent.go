@@ -165,7 +165,9 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 	case EventSessionError:
 		var d SessionErrorData
 		_ = json.Unmarshal(ev.Properties, &d)
-		return HighEvent{kind: HighEventError, sessionID: d.SessionID, isError: true, result: formatErrorMap(d.Error)}, true, true
+		// 错误文本一律走 text，对齐 lark-bridge 旧 CLI 版 {kind:EventError, text:msg} 约定。
+		// 调用方 ev.Text() 直接拿到服务端错误（quota/auth/工具详情），不走通用 fallback。
+		return HighEvent{kind: HighEventError, sessionID: d.SessionID, isError: true, text: formatErrorMap(d.Error)}, true, true
 	}
 	return HighEvent{}, false, false
 }

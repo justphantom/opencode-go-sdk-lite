@@ -99,8 +99,9 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			return
 		case ev, ok := <-src:
 			if !ok {
-				// 流被关闭（stream.Close 或 Unsubscribe 由别处触发）；兜底终止
-				out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true, result: "stream closed"}
+				// 流被关闭（stream.Close 或 Unsubscribe 由别处触发）；兜底终止。
+				// 文本走 text 字段，与 Error 事件约定一致。
+				out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true, text: "stream closed"}
 				return
 			}
 			he, emit, terminal := mapToHighEvent(ev, &assistantID, parts)

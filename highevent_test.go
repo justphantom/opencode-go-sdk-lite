@@ -160,3 +160,23 @@ func TestMapToHighEvent_StepFinishNonStop(t *testing.T) {
 		t.Errorf("step-finish non-stop: %+v emit=%v term=%v", he, emit, term)
 	}
 }
+
+// TestMapToHighEvent_SessionError：session.error 的服务端错误文本必须落在 text 字段，
+// 对齐 lark-bridge 旧 CLI 版 {kind:EventError, text:msg} 约定；调用方 ev.Text()
+// 直接拿到错误（quota/auth/工具详情），不走通用 fallback。
+// 回归 BUG-1：旧版把 formatErrorMap 塞进 result，text 恒空。
+func TestMapToHighEvent_SessionError(t *testing.T) {
+	var assistantID string
+	parts := partTracker{}
+	ev := Event{Type: EventSessionError, Properties: jsonRaw(`{"sessionID":"ses_1","error":{"message":"quota exceeded","code":429}}`)}
+	he, emit, term := mapToHighEvent(ev, &assistantID, parts)
+	if !emit || !term || he.Kind() != HighEventError || !he.IsError() {
+		t.Fatalf("session.error: %+v emit=%v term=%v", he, emit, term)
+	}
+	if got := he.Text(); got != "quota exceeded" {
+		t.Errorf("Text() = %q, want %q (服务端错误文本必须落到 text)", got, "quota exceeded")
+	}
+	if got := he.Result(); got != "" {
+		t.Errorf("Result() = %q, want empty（Error 事件不应在 result 携带文本）", got)
+	}
+}

@@ -288,3 +288,48 @@ func TestRun_ResultCarriesAccumulatedText(t *testing.T) {
 		t.Errorf("Result() = %q, want accumulated text %q (not finish reason)", got, "OK")
 	}
 }
+
+// TestRun_StreamClosedCarriesText：订阅 chan 被关闭（stream.Close 触发）且未收到
+// 终止事件时，pump 走兜底 Error。错误文本必须在 text 字段（BUG-1 修复一致性），
+// 调用方 ev.Text() 应拿到 "stream closed" 而非空串。
+func TestRun_StreamClosedCarriesText(t *testing.T) {
+	emptyFrames := func(sid string) string { return "" }
+	srv, _ := setupRunServer(t, "ses_run6", emptyFrames)
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// 等 Prompt 事件到达（确保 pump 已进入 select），再 Close 触发订阅 chan 关闭。
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = stream.Close()
+	}()
+
+	var last HighEvent
+	timeout := time.After(3 * time.Second)
+	for ev := range out {
+		last = ev
+		if ev.Kind() == HighEventError {
+			break
+		}
+		select {
+		case <-timeout:
+			t.Fatal("timeout waiting for error")
+		default:
+		}
+	}
+	if last.Kind() != HighEventError {
+		t.Fatalf("last kind = %v, want HighEventError", last.Kind())
+	}
+	if got := last.Text(); got != "stream closed" {
+		t.Errorf("Text() = %q, want %q（兜底错误文本必须落到 text）", got, "stream closed")
+	}
+}
