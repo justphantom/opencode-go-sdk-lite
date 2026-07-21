@@ -9,7 +9,7 @@
 | [`basic/`](./basic) | 最小路径：一轮对话 | `New` → `Health` → `ListModels` → `NewGlobalEventStream` → `Run` |
 | [`auto-reply/`](./auto-reply) | 权限/问题自动应答 | `SessionEvents` + `ReplyPermission` / `ReplyQuestion` |
 | [`concurrent/`](./concurrent) | 多 session 共享一条全局流 | `GlobalEventStream.Subscribe` + `Prompt` |
-| [`session-crud/`](./session-crud) | session 管理面全生命周期 | `Create/List/Get/SwitchModel/SwitchAgent/ListMessages/Delete` |
+| [`session-crud/`](./session-crud) | session 管理面全生命周期 | `Create/List/Get/UpdateSession/ListMessages/Delete` |
 
 ## 前置条件
 
@@ -50,6 +50,7 @@ go run ./examples/session-crud
 
 ## 注意
 
-- 全局流（`GlobalEventStream`）spec 不支持 `?after=`，断连窗口的 delta 事件会丢；终
-  止事件保证送达。强一致需求请改用 `SessionEvents`（session-scoped，有 `lastSeq` 续传）。
+- 全局流（`GlobalEventStream`）V1 不支持 `?after=`，断连窗口的 delta 事件会丢；终
+  止事件保证送达。强一致需求请改用 `SessionEvents`（session-scoped，V1 也不支持
+  `?after=` 续传，但 chan 容量更大且无多路复用抢断，单 session 场景比全局流稳）。
 - `ListMessages` 是最终一致：prompt 后约 3s 才返回新消息，不要用它判 prompt 成功。
