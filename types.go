@@ -1,6 +1,9 @@
 package opencode
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // ============ 通用 ============
 
@@ -154,6 +157,24 @@ type CreateSessionReq struct {
 type SessionMessage struct {
 	Info  MessageInfo       `json:"info"`
 	Parts []json.RawMessage `json:"parts"`
+}
+
+// FinalText 组装消息的最终回复文本：拼接 type=="text" 且非
+// synthetic/ignored 的 part.text；解析失败的 part 跳过。
+// SSE 断连后用它从 ListMessages 历史重组最终回复（兜底）。
+func (m SessionMessage) FinalText() string {
+	var b strings.Builder
+	for _, raw := range m.Parts {
+		var p Part
+		if err := json.Unmarshal(raw, &p); err != nil {
+			continue
+		}
+		if p.Type != "text" || p.Synthetic || p.Ignored {
+			continue
+		}
+		b.WriteString(p.Text)
+	}
+	return b.String()
 }
 
 // MessageInfo 是 User/Assistant 消息的公共字段（assistant 专有字段在 user 消息上为零值）。
@@ -423,7 +444,9 @@ type Part struct {
 	SessionID string     `json:"sessionID"`
 	Type      string     `json:"type"`
 	Text      string     `json:"text,omitempty"`
-	Reason    string     `json:"reason,omitempty"` // step-finish 的终止原因，"stop" 为成功
+	Synthetic bool       `json:"synthetic,omitempty"` // text part：服务端合成，不计入最终回复
+	Ignored   bool       `json:"ignored,omitempty"`   // text part：被忽略，不计入最终回复
+	Reason    string     `json:"reason,omitempty"`    // step-finish 的终止原因，"stop" 为成功
 	Tool      string     `json:"tool,omitempty"`
 	CallID    string     `json:"callID,omitempty"`
 	State     *ToolState `json:"state,omitempty"`

@@ -196,6 +196,21 @@ func TestPrompt_toolsAndFilePart(t *testing.T) {
 	}
 }
 
+func TestSessionMessage_FinalText(t *testing.T) {
+	m := SessionMessage{Parts: []json.RawMessage{
+		json.RawMessage(`{"type":"step-start"}`),
+		json.RawMessage(`{"type":"text","text":"你好"}`),
+		json.RawMessage(`{"type":"text","text":"（合成）","synthetic":true}`),
+		json.RawMessage(`{"type":"text","text":"（忽略）","ignored":true}`),
+		json.RawMessage(`{"type":"reasoning","text":"思考"}`),
+		json.RawMessage(`{"type":"text","text":"，世界"}`),
+		json.RawMessage(`{bad json`),
+	}}
+	if got := m.FinalText(); got != "你好，世界" {
+		t.Errorf("FinalText = %q", got)
+	}
+}
+
 func TestPrompt_respectsGivenIDs(t *testing.T) {
 	var gotBody struct {
 		MessageID string       `json:"messageID"`
