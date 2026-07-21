@@ -103,6 +103,29 @@ func TestListProviders(t *testing.T) {
 	}
 }
 
+func TestListConnectedProviders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/provider" || r.Method != "GET" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		// Connected 不受 loc 影响，请求不应带 directory
+		if got := r.URL.Query().Get("directory"); got != "" {
+			t.Errorf("directory query = %q, want empty", got)
+		}
+		_, _ = w.Write([]byte(providersFixture))
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	connected, err := c.ListConnectedProviders(context.Background())
+	if err != nil {
+		t.Fatalf("ListConnectedProviders: %v", err)
+	}
+	if len(connected) != 1 || connected[0] != "anthropic" {
+		t.Errorf("connected = %v, want [anthropic]", connected)
+	}
+}
+
 func TestGetProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/provider" {

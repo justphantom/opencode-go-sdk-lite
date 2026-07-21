@@ -57,6 +57,18 @@ func (c *Client) ListProviders(ctx context.Context, loc *LocationRef) ([]Provide
 	return resp.All, nil
 }
 
+// ListConnectedProviders 返回 serve 实际连接的 provider id 列表
+// （已配置凭证且可达）；与 ListProviders 返回的全量目录互补，
+// 调用方按它过滤才能得到"可跑"子集。Connected 是全局配置，
+// 不受 LocationRef 影响，故不接受 loc 参数。
+func (c *Client) ListConnectedProviders(ctx context.Context) ([]string, error) {
+	resp, err := c.listProviders(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Connected, nil
+}
+
 // GetProvider 返回单个 provider 详情。V1 无 /provider/{id}，从 all 中按 id 筛选。
 func (c *Client) GetProvider(ctx context.Context, providerID string, loc *LocationRef) (*ProviderInfo, error) {
 	resp, err := c.listProviders(ctx, loc)
