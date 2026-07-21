@@ -122,15 +122,23 @@ type RevertState struct {
 	Diff      string `json:"diff,omitempty"`
 }
 
+// PermissionRule 对应 V1 PermissionRule schema；Action 取值 allow / deny / ask。
+type PermissionRule struct {
+	Permission string `json:"permission"`
+	Pattern    string `json:"pattern"`
+	Action     string `json:"action"`
+}
+
 // CreateSessionReq 对应 POST /session；Directory/WorkspaceID 走平铺 query，其余进 body。
 type CreateSessionReq struct {
-	ParentID    string         `json:"parentID,omitempty"`
-	Title       string         `json:"title,omitempty"`
-	Agent       string         `json:"agent,omitempty"`
-	Model       *ModelRef      `json:"model,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-	Directory   string         `json:"-"`
-	WorkspaceID string         `json:"workspaceID,omitempty"`
+	ParentID    string           `json:"parentID,omitempty"`
+	Title       string           `json:"title,omitempty"`
+	Agent       string           `json:"agent,omitempty"`
+	Model       *ModelRef        `json:"model,omitempty"`
+	Metadata    map[string]any   `json:"metadata,omitempty"`
+	Permission  []PermissionRule `json:"permission,omitempty"`
+	Directory   string           `json:"-"`
+	WorkspaceID string           `json:"workspaceID,omitempty"`
 }
 
 // ============ Messages ============
