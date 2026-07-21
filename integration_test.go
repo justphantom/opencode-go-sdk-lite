@@ -4,6 +4,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -52,6 +53,11 @@ func TestIntegration(t *testing.T) {
 	t.Run("Interrupt", func(t *testing.T) { testInterrupt(t, c) })
 	t.Run("DirectoryRouting", func(t *testing.T) { testDirectoryRouting(t, c) })
 	t.Run("GlobalStreamRun", func(t *testing.T) { testGlobalStreamRun(t, c) })
+	t.Run("SkillCommand", func(t *testing.T) { testSkillCommand(t, c) })
+	t.Run("UpdateSession", func(t *testing.T) { testUpdateSessionLive(t, c) })
+	t.Run("ToolKindLive", func(t *testing.T) { testToolKindLive(t, c) })
+	t.Run("PermissionReplyLive", func(t *testing.T) { testPermissionReplyLive(t, c) })
+	t.Run("QuestionReplyLive", func(t *testing.T) { testQuestionReplyLive(t, c) })
 }
 
 func testHealth(t *testing.T, c *Client) {
@@ -89,6 +95,20 @@ func testMetadata(t *testing.T, c *Client) {
 		t.Fatalf("ListModels: %v", err)
 	}
 	t.Logf("agents=%d models=%d", len(agents), len(models))
+	// 上下文大小与 variants（思考深度等额外变量）必须随模型带出
+	var withCtx, withVariants int
+	for _, m := range models {
+		if m.Limit.Context > 0 {
+			withCtx++
+		}
+		if len(m.Variants) > 0 {
+			withVariants++
+		}
+	}
+	if len(models) > 0 && withCtx == 0 {
+		t.Errorf("所有模型 Limit.Context 均为 0")
+	}
+	t.Logf("models with context=%d with variants=%d", withCtx, withVariants)
 	if _, err := c.ListProviders(ctx, nil); err != nil {
 		t.Fatalf("ListProviders: %v", err)
 	}
@@ -447,4 +467,254 @@ func testGlobalStreamRun(t *testing.T, c *Client) {
 	}
 	t.Logf("kinds=%v text=%q tokens=%d/%d cost=%.4f",
 		kinds, text.String(), last.InputTokens(), last.OutputTokens(), last.Cost())
+}
+
+// testSkillCommand 实测 skill / command 查询。
+func testSkillCommand(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	skills, err := c.ListSkills(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+	for _, s := range skills {
+		if s.Name == "" || s.Location == "" || s.Content == "" {
+			t.Errorf("skill 字段缺失: %+v", s)
+		}
+	}
+
+	cmds, err := c.ListCommands(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListCommands: %v", err)
+	}
+	for _, cmd := range cmds {
+		if cmd.Name == "" || cmd.Template == "" {
+			t.Errorf("command 字段缺失: %+v", cmd)
+		}
+	}
+	t.Logf("skills=%d commands=%d", len(skills), len(cmds))
+}
+
+// testUpdateSessionLive 改标题后读回校验。
+func testUpdateSessionLive(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ses, err := c.CreateSession(ctx, &CreateSessionReq{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = c.DeleteSession(context.Background(), ses.ID) })
+
+	title := "SDK 集成测试标题"
+	upd, err := c.UpdateSession(ctx, ses.ID, &UpdateSessionReq{Title: title})
+	if err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+	if upd.Title != title {
+		t.Errorf("响应 title = %q, want %q", upd.Title, title)
+	}
+	got, err := c.GetSession(ctx, ses.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Title != title {
+		t.Errorf("读回 title = %q, want %q", got.Title, title)
+	}
+}
+
+// testToolKindLive 触发一次真实工具调用（bash），断言 tool_use 事件
+// 带 ToolName 且 ClassifyTool 归类为 shell；permission.asked 自动放行。
+// 同时观察 todo.updated 能否被 TodoUpdatedData 解析（不强制出现）。
+func testToolKindLive(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	stream, err := c.NewGlobalEventStream(ctx, nil)
+	if err != nil {
+		t.Fatalf("NewGlobalEventStream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{
+		Prompt: "请用 bash 工具执行 `echo sdk-tool-kind-test`，然后只回复：完成",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var toolNames []string
+	sawShell := false
+	for ev := range out {
+		switch ev.Kind() {
+		case HighEventToolUse:
+			toolNames = append(toolNames, ev.ToolName())
+			if ev.ToolKind() == ToolKindShell {
+				sawShell = true
+			}
+			if ev.ToolKind() == "" {
+				t.Errorf("tool_use 缺 ToolKind: %s", ev.ToolName())
+			}
+		case HighEventError:
+			t.Skipf("模型不可用（%s），跳过工具分类实测", ev.Result())
+		}
+	}
+	if !sawShell {
+		t.Fatalf("未观察到 shell 类工具调用; tools=%v", toolNames)
+	}
+	t.Logf("tools=%v", toolNames)
+}
+
+// testPermissionReplyLive 用会话级 permission 规则（bash=ask）强制产生
+// permission.asked，断言事件解析、ListPermissions 兜底查询、ReplyPermission 放行。
+func testPermissionReplyLive(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	ses, err := c.CreateSession(ctx, &CreateSessionReq{
+		Permission: []PermissionRule{{Permission: "bash", Pattern: "*", Action: "ask"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = c.DeleteSession(context.Background(), ses.ID) })
+
+	subCtx, stopSub := context.WithCancel(ctx)
+	defer stopSub()
+	events, _ := c.SessionEvents(subCtx, ses.ID, nil)
+
+	if _, err := c.Prompt(ctx, ses.ID, &PromptReq{
+		Parts: []PromptPart{{Type: "text", Text: "请用 bash 工具执行 `echo sdk-permission-test`，然后只回复：完成"}},
+	}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	replied := false
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatalf("事件流关闭; replied=%v", replied)
+			}
+			switch ev.Type {
+			case EventPermissionAsked:
+				var d PermissionAskedData
+				if err := json.Unmarshal(ev.Properties, &d); err != nil {
+					t.Fatalf("PermissionAskedData 解析: %v", err)
+				}
+				if d.Permission == "" || d.SessionID != ses.ID {
+					t.Errorf("permission.asked 内容异常: %+v", d)
+				}
+				// 兜底查询必须能查到该 pending 请求
+				pend, err := c.ListPermissions(ctx, ses.ID)
+				if err != nil {
+					t.Fatalf("ListPermissions: %v", err)
+				}
+				found := false
+				for _, p := range pend {
+					if p.ID == d.ID {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("ListPermissions 未包含 %s: %+v", d.ID, pend)
+				}
+				if err := c.ReplyPermission(ctx, d.ID, PermissionReplyOnce, ""); err != nil {
+					t.Fatalf("ReplyPermission: %v", err)
+				}
+				replied = true
+			case EventSessionError:
+				t.Skipf("session.error（模型无凭证？），跳过")
+			case EventSessionIdle:
+				if !replied {
+					t.Skipf("未产生 permission.asked（规则未生效？），跳过")
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatalf("超时; replied=%v", replied)
+		}
+	}
+}
+
+// testQuestionReplyLive 引导模型调用 question 工具，断言 question.asked
+// 事件解析、ListQuestions 兜底查询、ReplyQuestion 应答。
+// 是否调用工具由模型决定，未触发时 Skip 而非 Fail。
+func testQuestionReplyLive(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	ses, err := c.CreateSession(ctx, &CreateSessionReq{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = c.DeleteSession(context.Background(), ses.ID) })
+
+	subCtx, stopSub := context.WithCancel(ctx)
+	defer stopSub()
+	events, _ := c.SessionEvents(subCtx, ses.ID, nil)
+
+	if _, err := c.Prompt(ctx, ses.ID, &PromptReq{
+		Parts: []PromptPart{{Type: "text", Text: "请调用 question 工具向我提一个二选一的问题（选项：苹果、香蕉），等我回答后再回复"}},
+	}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	replied := false
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatalf("事件流关闭; replied=%v", replied)
+			}
+			switch ev.Type {
+			case EventQuestionAsked:
+				var d QuestionAskedData
+				if err := json.Unmarshal(ev.Properties, &d); err != nil {
+					t.Fatalf("QuestionAskedData 解析: %v", err)
+				}
+				if len(d.Questions) == 0 {
+					t.Fatalf("question.asked 无问题: %+v", d)
+				}
+				pend, err := c.ListQuestions(ctx, ses.ID)
+				if err != nil {
+					t.Fatalf("ListQuestions: %v", err)
+				}
+				found := false
+				for _, q := range pend {
+					if q.ID == d.ID {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("ListQuestions 未包含 %s: %+v", d.ID, pend)
+				}
+				ans := make([][]string, len(d.Questions))
+				for i, q := range d.Questions {
+					if len(q.Options) > 0 {
+						ans[i] = []string{q.Options[0].Label}
+					} else {
+						ans[i] = []string{"苹果"}
+					}
+				}
+				if err := c.ReplyQuestion(ctx, d.ID, &QuestionReply{Answers: ans}); err != nil {
+					t.Fatalf("ReplyQuestion: %v", err)
+				}
+				replied = true
+			case EventSessionError:
+				t.Skipf("session.error（模型无凭证？），跳过")
+			case EventSessionIdle:
+				if !replied {
+					t.Skipf("模型未调用 question 工具，跳过")
+				}
+				return
+			}
+		case <-ctx.Done():
+			if !replied {
+				t.Skipf("超时且未触发 question.asked，跳过")
+			}
+			return
+		}
+	}
 }
