@@ -36,10 +36,10 @@ go get github.com/justphantom/opencode-go-sdk-lite
 | `ListSessions(ctx, *ListSessionsOpt)` | `GET /session` | 裸数组，无游标分页 |
 | `GetSession(ctx, sessionID)` | `GET /session/{id}` | |
 | `DeleteSession(ctx, id)` | `DELETE /session/{id}` | 返回 false 视为错误 |
-| `Prompt(ctx, id, *PromptReq) (*PromptAck, error)` | `POST /session/{id}/prompt_async` | 204 无 body；messageID/partID 由 SDK 生成并经 ack 回传 |
+| `Prompt(ctx, id, *PromptReq) (*PromptAck, error)` | `POST /session/{id}/prompt_async` | 204 无 body；messageID/partID 由 SDK 生成并经 ack 回传；支持 model/agent/variant/system/tools 开关与 text/file 附件 part |
 | `Interrupt(ctx, id)` | `POST /session/{id}/abort` | 空闲时为 no-op |
 | `UpdateSession(ctx, id, *UpdateSessionReq)` | `PATCH /session/{id}` | 改标题/元数据/归档时间，返回更新后会话 |
-| `ListMessages(ctx, id, *ListMessagesOpt)` | `GET /session/{id}/message` | 元素为 `{info, parts}` |
+| `ListMessages(ctx, id, *ListMessagesOpt)` | `GET /session/{id}/message` | 元素为 `{info, parts}`；`SessionMessage.FinalText()` 重组最终回复（过滤 synthetic/ignored），SSE 断连后兜底用 |
 
 ### Client / Agent / Health — `client.go` / `agent.go`
 

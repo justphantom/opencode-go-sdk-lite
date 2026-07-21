@@ -51,7 +51,7 @@
 | 5.1 | 对话开始标志：Run 首事件携带 sessionID 与 user messageID | ✅ |
 | 5.2 | 对话结束标志：step-finish 且 reason="stop" 为主信号，session.idle 兜底，channel 关闭前必有终止事件（result/error） | ✅ |
 | 5.3 | 思考内容：reasoning 增量解析为独立事件类型 | ✅ |
-| 5.4 | 最终回复组装：拼接 assistant 消息中非 synthetic/ignored 的 text part | ✅ |
+| 5.4 | 最终回复组装：`SessionMessage.FinalText()` 拼接非 synthetic/ignored 的 text part；Run 流内累积 delta 回填 result | ✅ |
 | 5.5 | 工具调用过程：tool_use（发起，含工具名+输入）/ tool_result（结果，含失败标记） | ✅ |
 | 5.6 | 工具类型细分识别：读写文件、执行 shell、搜索、抓取网页、调用 MCP、subagent、todo | ✅ `ClassifyTool` + HighEvent.ToolKind()；MCP 无前缀约定，尽力而为 |
 | 5.7 | question 消息解析（questions/options/multiple/custom 结构） | ✅ |
@@ -85,7 +85,7 @@
 |---|---|---|---|
 | 8.1 | 待处理 permission 查询（全局拉取后按 sessionID 过滤） | `GET /permission` | ✅ |
 | 8.2 | 待处理 question 查询（同上） | `GET /question` | ✅ |
-| 8.3 | 最终回复消息查询（历史消息 `{info, parts}`，重组最终回复） | `GET /session/{id}/message` | ✅ |
+| 8.3 | 最终回复消息查询（历史消息 `{info, parts}`，`FinalText()` 重组最终回复） | `GET /session/{id}/message` | ✅ |
 
 ## 9. 高层封装（Run）
 
