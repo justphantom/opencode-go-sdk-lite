@@ -50,6 +50,7 @@ func generateMessageIDAt(ms int64) (string, error) {
 func generateIDAt(prefix string, ms int64) (string, error) {
 	ms, seq := defaultIDState.nextSeq(ms)
 
+	//nolint:gosec // uint64(ms) 安全：ms 来自 UnixMilli 约 1.78e12，远小于 int64 上界；后续 & msgTsMask36 进一步截断到 36bit
 	now := (uint64(ms) & msgTsMask36) << msgTimeShift
 	now |= seq & 0xFFF
 

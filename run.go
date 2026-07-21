@@ -139,6 +139,10 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 }
 
 // fireAndForgetAbort ctx 取消时尽力通知服务端中断，超时即放弃。
+// 用 context.Background() 派生新 ctx 而非传入父 ctx：调用方此时 ctx 已取消，
+// 传进来会让 Interrupt 立即失败，违背 fire-and-forget 语义。
+//
+//nolint:contextcheck // 有意使用 Background 派生，确保 Interrupt 不被已取消的父 ctx 拖死
 func (c *Client) fireAndForgetAbort(sessionID string) {
 	abCtx, cancel := context.WithTimeout(context.Background(), runAbortTimeout)
 	defer cancel()

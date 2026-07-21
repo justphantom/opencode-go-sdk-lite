@@ -173,6 +173,7 @@ func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived boo
 	req.Header.Set("Cache-Control", "no-cache")
 
 	start := time.Now()
+	//nolint:bodyclose // Do 返 error 时 resp==nil 无需关；成功路径的 Body 在下方各错误分支统一 drainAndClose
 	resp, err := s.http.Do(req)
 	if err != nil {
 		// ctx 取消属正常退出，不重连
