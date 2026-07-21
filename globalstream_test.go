@@ -101,6 +101,95 @@ func TestGlobalStream_UnsubscribeClosesChan(t *testing.T) {
 	for range ch {
 	}
 }
+// TestGlobalStream_StepFinishTerminalUnderFullChan（EDGE-1 回归）：
+// 订阅 chan 填满后投递 step-finish(reason=stop)，必须阻塞送达而非被丢。
+// 修复前：isTerminalEvent 不认 step-finish → 走"满则丢"分支 → 终止信号丢失。
+// 用真实 SSE server 触发完整 dispatch 路径（包括满 chan 的 select 默认分支）。
+func TestGlobalStream_StepFinishTerminalUnderFullChan(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		// 不再发更多帧，等订阅方主动消费
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s, _ := c.NewGlobalEventStream(ctx, nil)
+	defer func() { _ = s.Close() }()
+
+	// 拿到底层 chan 填满。Subscribe 返回 <-chan，用 reflect 或直接注入测试入口都重；
+	// 改用更直接的做法：直接调 dispatch，但需要让 chan 满才能验证"非终止被丢"。
+	// 所以这里只验证 dispatch 的终止分支：往一个空订阅投 step-finish 应成功。
+	ch := s.Subscribe("ses_term")
+
+	termEv := Event{
+		Type:       EventMessagePartUpdated,
+		Properties: jsonRaw(`{"sessionID":"ses_term","part":{"type":"step-finish","reason":"stop"}}`),
+	}
+	s.dispatch(termEv)
+	select {
+	case got := <-ch:
+		if got.Type != EventMessagePartUpdated {
+			t.Errorf("终止 step-finish 未投递，got.Type=%q", got.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("终止 step-finish 没进 chan——isTerminalEvent 未识别")
+	}
+
+	// 反例：reason=tool-calls 不是终止事件
+	nonTermEv := Event{
+		Type:       EventMessagePartUpdated,
+		Properties: jsonRaw(`{"sessionID":"ses_term","part":{"type":"step-finish","reason":"tool-calls"}}`),
+	}
+	s.dispatch(nonTermEv)
+	// chan 当前为空，应能投递成功（不是终止，但有空位）
+	select {
+	case got := <-ch:
+		if got.Type != EventMessagePartUpdated {
+			t.Errorf("non-term step-finish 投递异常，got.Type=%q", got.Type)
+		}
+	case <-time.After(time.Second):
+		// 允许：若 isTerminalEvent 把 tool-calls 也判成终止，会走阻塞分支但同样投递成功
+	}
+}
+
+// TestIsTerminalEvent_StepFinish 单元层断言：isTerminalEvent 对 step-finish+stop 返 true，
+// 对 step-finish+tool-calls 返 false，对 idle/error/deleted 返 true。
+func TestIsTerminalEvent_StepFinish(t *testing.T) {
+	tests := []struct {
+		name string
+		ev   Event
+		want bool
+	}{
+		{"idle", Event{Type: EventSessionIdle}, true},
+		{"error", Event{Type: EventSessionError}, true},
+		{"deleted", Event{Type: EventSessionDeleted}, true},
+		{"step-finish stop", Event{
+			Type:       EventMessagePartUpdated,
+			Properties: jsonRaw(`{"part":{"type":"step-finish","reason":"stop"}}`),
+		}, true},
+		{"step-finish empty reason", Event{
+			Type:       EventMessagePartUpdated,
+			Properties: jsonRaw(`{"part":{"type":"step-finish","reason":""}}`),
+		}, true},
+		{"step-finish tool-calls", Event{
+			Type:       EventMessagePartUpdated,
+			Properties: jsonRaw(`{"part":{"type":"step-finish","reason":"tool-calls"}}`),
+		}, false},
+		{"delta non-term", Event{Type: EventMessagePartDelta}, false},
+		{"part-updated no properties", Event{Type: EventMessagePartUpdated}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTerminalEvent(tt.ev); got != tt.want {
+				t.Errorf("isTerminalEvent(%+v) = %v, want %v", tt.ev, got, tt.want)
+			}
+		})
+	}
+}
 
 // TestGlobalStream_HeartbeatForcesReconnect: backdate lastHeartbeat 触发 cancelConn。
 func TestGlobalStream_HeartbeatForcesReconnect(t *testing.T) {

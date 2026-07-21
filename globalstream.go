@@ -228,7 +228,7 @@ func (s *GlobalEventStream) dispatch(ev Event) {
 		return
 	}
 	// 非阻塞投递；终止事件必送达
-	if isTerminalEvent(ev.Type) {
+	if isTerminalEvent(ev) {
 		select {
 		case <-s.stopCh:
 		case ch <- ev:

@@ -82,10 +82,31 @@ func extractSessionID(ev Event) string {
 // isTerminalEvent 判断是否为终止事件（必送达，不能丢）。
 // 实测 turn 的结束信号：step-finish(reason=stop) → message.updated →
 // session.status idle → session.idle；idle/error/deleted 均按终止处理。
-func isTerminalEvent(t string) bool {
-	switch t {
+// EDGE-1：step-finish(reason=stop) 是 turn 真实结束信号，满 chan 时若走"满则丢"
+// 分支会让消费方拿不到 HighEventResult（token 统计丢失），故也按终止处理。
+func isTerminalEvent(ev Event) bool {
+	switch ev.Type {
 	case EventSessionIdle, EventSessionError, EventSessionDeleted:
 		return true
+	case EventMessagePartUpdated:
+		// 内层探测 part.type=step-finish + reason=stop/空。该事件频率低（每 step 一次），
+		// 多一次 JSON probe 无性能影响。
+		if len(ev.Properties) == 0 {
+			return false
+		}
+		var probe struct {
+			Part struct {
+				Type   string `json:"type"`
+				Reason string `json:"reason"`
+			} `json:"part"`
+		}
+		if err := json.Unmarshal(ev.Properties, &probe); err != nil {
+			return false
+		}
+		if probe.Part.Type == PartTypeStepFinish &&
+			(probe.Part.Reason == "stop" || probe.Part.Reason == "") {
+			return true
+		}
 	}
 	return false
 }
