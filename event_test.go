@@ -12,6 +12,20 @@ import (
 )
 
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
+
+func TestTodoUpdatedData_unmarshal(t *testing.T) {
+	raw := `{"sessionID":"ses_1","todos":[{"content":"写测试","status":"in_progress","priority":"high"},{"content":"跑测试","status":"pending","priority":"low"}]}`
+	var d TodoUpdatedData
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if d.SessionID != "ses_1" || len(d.Todos) != 2 {
+		t.Fatalf("d = %+v", d)
+	}
+	if d.Todos[0].Status != "in_progress" || d.Todos[1].Priority != "low" {
+		t.Errorf("todos = %+v", d.Todos)
+	}
+}
 func jsonRaw(s string) json.RawMessage  { return json.RawMessage(s) }
 
 // sseFrame 构造一帧 SSE 数据。

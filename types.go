@@ -469,3 +469,16 @@ type SessionErrorData struct {
 	SessionID string         `json:"sessionID"`
 	Error     map[string]any `json:"error"`
 }
+
+// Todo 对应 V1 Todo schema。
+type Todo struct {
+	Content  string `json:"content"`
+	Status   string `json:"status"` // pending | in_progress | completed | cancelled
+	Priority string `json:"priority"`
+}
+
+// TodoUpdatedData 是 todo.updated 的 properties；Todos 为该会话当前完整列表。
+type TodoUpdatedData struct {
+	SessionID string `json:"sessionID"`
+	Todos     []Todo `json:"todos"`
+}
