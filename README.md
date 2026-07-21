@@ -36,10 +36,13 @@ go get github.com/justphantom/opencode-go-sdk-lite
 | `ListSessions(ctx, *ListSessionsOpt)` | `GET /session` | 裸数组无游标；serve 默认 limit=100 会截断，SDK 默认上送 limit=200，更多需显式 Limit |
 | `GetSession(ctx, sessionID)` | `GET /session/{id}` | |
 | `DeleteSession(ctx, id)` | `DELETE /session/{id}` | 返回 false 视为错误 |
+| `SessionStatuses(ctx)` | `GET /session/status` | map[sessionID]运行状态；空闲会话可能缺省，缺省即 idle（session.go:218） |
+| `DeleteSessionIfIdle(ctx, id)` | （内部 SessionStatuses + DELETE） | busy 时拒绝且不发 DELETE；状态查询失败透传错误；查询与删除间有竞态，尽力而为（session.go:205） |
 | `Prompt(ctx, id, *PromptReq) (*PromptAck, error)` | `POST /session/{id}/prompt_async` | 204 无 body；messageID/partID 由 SDK 生成并经 ack 回传；支持 model/agent/variant/system/tools 开关与 text/file 附件 part |
 | `Interrupt(ctx, id)` | `POST /session/{id}/abort` | 空闲时为 no-op |
 | `UpdateSession(ctx, id, *UpdateSessionReq)` | `PATCH /session/{id}` | 改标题/元数据/归档时间，返回更新后会话 |
 | `ListMessages(ctx, id, *ListMessagesOpt)` | `GET /session/{id}/message` | 元素为 `{info, parts}`；`SessionMessage.FinalText()` 重组最终回复（过滤 synthetic/ignored），SSE 断连后兜底用 |
+| `GetMessage(ctx, sessionID, messageID)` | `GET /session/{id}/message/{messageID}` | 单条消息（info+parts）；终止后取服务端落库最终回复用（session.go:264） |
 
 ### Client / Agent / Health — `client.go` / `agent.go`
 
@@ -88,6 +91,7 @@ V1 无独立模型目录，三者统一走 `GET /provider`（响应 `{all, defau
 | `ListModels(ctx, *LocationRef)` | 拍平 `all[].models`；`Enabled` 由 `status=="active"` 推导 |
 | `ListProviders(ctx, *LocationRef)` | 返回 `all` |
 | `GetProvider(ctx, providerID, *LocationRef)` | 从 `all` 按 id 筛选；未命中返回错误 |
+| `ListConnectedProviders(ctx)` | 返回 `connected`（已连接 provider id 列表；不带 LocationRef，model.go:64） |
 
 ### 权限应答 — `permission.go`
 
@@ -279,6 +283,8 @@ for ev := range out {
 ```
 
 完成信号是 step-finish part 且 `reason="stop"`（实测确认；`session.idle` 作兜底终止）。
+`HighEventResult` 的结果文本优先取服务端落库文本（`GetMessage` 的 `FinalText`，免疫 SSE 丢帧）；
+取不到或为空则回退 SSE 累积的 text delta（run.go:120-151）。
 
 ## 辅助 API
 
