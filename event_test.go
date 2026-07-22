@@ -26,7 +26,7 @@ func TestTodoUpdatedData_unmarshal(t *testing.T) {
 		t.Errorf("todos = %+v", d.Todos)
 	}
 }
-func jsonRaw(s string) json.RawMessage  { return json.RawMessage(s) }
+func jsonRaw(s string) json.RawMessage { return json.RawMessage(s) }
 
 // sseFrame 构造一帧 SSE 数据。
 func sseFrame(ev Event) string {

@@ -121,14 +121,14 @@ func (c *Client) Prompt(ctx context.Context, sessionID string, req *PromptReq) (
 
 	// wire body：model 键为 modelID（与 ModelRef.ID 不同名），在此转换
 	body := struct {
-		MessageID string            `json:"messageID,omitempty"`
-		Model     *PromptModelRef   `json:"model,omitempty"`
-		Agent     string            `json:"agent,omitempty"`
-		NoReply   bool              `json:"noReply,omitempty"`
-		System    string            `json:"system,omitempty"`
-		Variant   string            `json:"variant,omitempty"`
-		Tools     map[string]bool   `json:"tools,omitempty"`
-		Parts     []PromptPart      `json:"parts"`
+		MessageID string          `json:"messageID,omitempty"`
+		Model     *PromptModelRef `json:"model,omitempty"`
+		Agent     string          `json:"agent,omitempty"`
+		NoReply   bool            `json:"noReply,omitempty"`
+		System    string          `json:"system,omitempty"`
+		Variant   string          `json:"variant,omitempty"`
+		Tools     map[string]bool `json:"tools,omitempty"`
+		Parts     []PromptPart    `json:"parts"`
 	}{
 		MessageID: ack.MessageID,
 		Agent:     req.Agent,
