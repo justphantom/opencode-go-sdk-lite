@@ -37,13 +37,16 @@ func TestReplyPermission(t *testing.T) {
 		if r.URL.Path != "/permission/per_1/reply" || r.Method != "POST" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
+		if r.URL.Query().Get("directory") != "/repo" {
+			t.Errorf("directory query = %q, want /repo", r.URL.Query().Get("directory"))
+		}
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		_, _ = w.Write([]byte(`true`))
 	}))
 	defer srv.Close()
 
 	c, _ := New(srv.URL)
-	if err := c.ReplyPermission(context.Background(), "per_1", PermissionReplyOnce, "ok"); err != nil {
+	if err := c.ReplyPermission(context.Background(), "per_1", "/repo", PermissionReplyOnce, "ok"); err != nil {
 		t.Fatalf("ReplyPermission: %v", err)
 	}
 	if gotBody["reply"] != "once" || gotBody["message"] != "ok" {

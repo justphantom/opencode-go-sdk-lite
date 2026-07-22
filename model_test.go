@@ -150,7 +150,7 @@ func TestGetProvider(t *testing.T) {
 
 func TestReplyPermission_validates(t *testing.T) {
 	c, _ := New("http://x")
-	if err := c.ReplyPermission(context.Background(), "per_1", "bogus", ""); err == nil {
+	if err := c.ReplyPermission(context.Background(), "per_1", "/repo", "bogus", ""); err == nil {
 		t.Fatal("expected error for invalid reply")
 	}
 }

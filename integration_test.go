@@ -699,7 +699,7 @@ func testPermissionReplyLive(t *testing.T, c *Client) {
 				if !found {
 					t.Errorf("ListPermissions 未包含 %s: %+v", d.ID, pend)
 				}
-				if err := c.ReplyPermission(ctx, d.ID, PermissionReplyOnce, ""); err != nil {
+				if err := c.ReplyPermission(ctx, d.ID, "", PermissionReplyOnce, ""); err != nil {
 					t.Fatalf("ReplyPermission: %v", err)
 				}
 				replied = true
@@ -777,7 +777,7 @@ func testQuestionReplyLive(t *testing.T, c *Client) {
 						ans[i] = []string{"苹果"}
 					}
 				}
-				if err := c.ReplyQuestion(ctx, d.ID, &QuestionReply{Answers: ans}); err != nil {
+				if err := c.ReplyQuestion(ctx, d.ID, "", &QuestionReply{Answers: ans}); err != nil {
 					t.Fatalf("ReplyQuestion: %v", err)
 				}
 				replied = true

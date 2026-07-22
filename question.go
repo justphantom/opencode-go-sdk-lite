@@ -19,14 +19,17 @@ func (c *Client) ListQuestions(ctx context.Context, sessionID string) ([]Questio
 }
 
 // ReplyQuestion 回答一条挂起的问题请求。answers 与 questions 一一对应。
-func (c *Client) ReplyQuestion(ctx context.Context, requestID string, r *QuestionReply) error {
+// directory 必须与该 question 所在 Run 的 Location 一致：opencode serve 按
+// directory 隔离 pending question，不带 directory 时 serve 在默认上下文找不到
+// 请求并返回 404。
+func (c *Client) ReplyQuestion(ctx context.Context, requestID, directory string, r *QuestionReply) error {
 	if r == nil {
 		r = &QuestionReply{}
 	}
-	return c.doEmpty(ctx, http_POST, "/question/"+requestID+"/reply", nil, r, 200)
+	return c.doEmpty(ctx, http_POST, "/question/"+requestID+"/reply", dirQuery(directory), r, 200)
 }
 
-// RejectQuestion 拒绝一条挂起的问题请求。
-func (c *Client) RejectQuestion(ctx context.Context, requestID string) error {
-	return c.doEmpty(ctx, http_POST, "/question/"+requestID+"/reject", nil, nil, 200)
+// RejectQuestion 拒绝一条挂起的问题请求。directory 同 ReplyQuestion。
+func (c *Client) RejectQuestion(ctx context.Context, requestID, directory string) error {
+	return c.doEmpty(ctx, http_POST, "/question/"+requestID+"/reject", dirQuery(directory), nil, 200)
 }
