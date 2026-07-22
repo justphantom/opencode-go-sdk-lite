@@ -346,6 +346,83 @@ func TestRun_ResultPrefersServerText(t *testing.T) {
 	t.Fatal("no HighEventResult")
 }
 
+// sseStepFinish 构造一个指定 reason 的 step-finish 的 message.part.updated 帧。
+func sseStepFinish(sid, mid, reason string, seq int64) string {
+	return fmt.Sprintf(
+		`data: {"id":"evt_%d","type":"message.part.updated","properties":{"sessionID":"%s","part":{"id":"prt_f1","reason":%q,"messageID":"%s","sessionID":"%s","type":"step-finish","tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0},"time":1}}`+"\n\n",
+		seq, sid, reason, mid, sid,
+	)
+}
+
+// frames_agentLoop: 多轮 agent-loop——A 轮 tool-calls 收尾，B 轮文本+stop。
+// 两轮 messageID 不同，回归 BUG：assistantID 单向锁定首轮导致 B 轮事件被过滤。
+func frames_agentLoop(sid string) string {
+	var b strings.Builder
+	b.WriteString(sseStepStarted(sid, "msg_round_a", 1))
+	b.WriteString(sseTextDelta(sid, "msg_round_a", "调用工具", 2))
+	b.WriteString(sseStepFinish(sid, "msg_round_a", "tool-calls", 3))
+	b.WriteString(sseStepStarted(sid, assistantMsgID, 4))
+	b.WriteString(sseTextDelta(sid, assistantMsgID, "OK", 5))
+	b.WriteString(sseStepEnded(sid, assistantMsgID, 6))
+	return b.String()
+}
+
+// TestRun_MultiRoundAgentLoop：多轮 agent-loop 下 assistantID 跟随最新 step，
+// 第二轮的 text 与 step-finish(stop) 不被过滤，终态 result 非空且等于第二轮文本。
+func TestRun_MultiRoundAgentLoop(t *testing.T) {
+	srv, _ := setupRunServer(t, "ses_run8", frames_agentLoop)
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var texts []string
+	var stepFinishes int
+	var result HighEvent
+	timeout := time.After(3 * time.Second)
+loop:
+	for {
+		select {
+		case ev, ok := <-out:
+			if !ok {
+				break loop
+			}
+			switch ev.Kind() {
+			case HighEventText:
+				texts = append(texts, ev.Text())
+			case HighEventStepFinish:
+				stepFinishes++
+			case HighEventResult:
+				result = ev
+				break loop
+			}
+		case <-timeout:
+			t.Fatal("timeout waiting for result")
+		}
+	}
+	if result.Kind() != HighEventResult {
+		t.Fatal("no HighEventResult received")
+	}
+	if stepFinishes != 1 {
+		t.Errorf("step_finish count = %d, want 1 (tool-calls 中间步)", stepFinishes)
+	}
+	joined := strings.Join(texts, "")
+	if !strings.Contains(joined, "OK") {
+		t.Errorf("round-B text filtered out, texts = %v", texts)
+	}
+	if got := result.Result(); got != "OK" {
+		t.Errorf("Result() = %q, want %q（多轮终态不得为空）", got, "OK")
+	}
+}
+
 // TestRun_StreamClosedCarriesText：订阅 chan 被关闭（stream.Close 触发）且未收到
 // 终止事件时，pump 走兜底 Error。错误文本必须在 text 字段（BUG-1 修复一致性），
 // 调用方 ev.Text() 应拿到 "stream closed" 而非空串。

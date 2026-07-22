@@ -245,6 +245,7 @@ for ev := range ch {
 ## 高层 Run + HighEvent（推荐）
 
 `Run` 把「创建/复用 session → 订阅全局流 → 发 prompt_async → 按 assistantMessageID 过滤 → 合成终止事件」打包，
+过滤用的 assistantMessageID 在多轮（agent-loop）下跟随最新 step 的 messageID（每轮换 ID，不跟随会丢后续轮次事件）。
 把原始事件归纳为 11 种 `HighEventKind`，channel close 前必有终止事件（result/error）。
 首事件必为 `HighEventPrompt`（携带 SDK 生成的 user messageID 与 sessionID）。
 

@@ -247,6 +247,112 @@ func TestMapToHighEvent_QuestionAsked(t *testing.T) {
 	}
 }
 
+// TestFollowAssistantID：无条件跟随新 messageID；空 id 与 nil 指针不动。
+func TestFollowAssistantID(t *testing.T) {
+	id := "msg_a"
+	followAssistantID(&id, "msg_b")
+	if id != "msg_b" {
+		t.Errorf("follow = %q, want msg_b", id)
+	}
+	followAssistantID(&id, "")
+	if id != "msg_b" {
+		t.Errorf("empty id must not overwrite, got %q", id)
+	}
+	followAssistantID(nil, "msg_c") // 不应 panic
+}
+
+// TestMapToHighEvent_MultiRoundFollowsNewAssistantID：多轮 agent-loop 回归。
+// step-start/step-finish 必须把 assistantID 换到新一轮 messageID，
+// 否则第二轮的 text delta 与 step-finish(stop) 会被 pump 过滤，终态 result 为空。
+func TestMapToHighEvent_MultiRoundFollowsNewAssistantID(t *testing.T) {
+	var assistantID string
+	parts := partTracker{}
+
+	stepStart := func(mid string) {
+		t.Helper()
+		he, emit, term := mapToHighEvent(partUpdatedEvent(PartUpdatedData{
+			SessionID: "ses_1",
+			Part:      Part{ID: "prt_s_" + mid, MessageID: mid, Type: "step-start"},
+		}), &assistantID, parts)
+		if !emit || term || he.Kind() != HighEventStepStart {
+			t.Fatalf("step-start %s: %+v emit=%v term=%v", mid, he, emit, term)
+		}
+	}
+	stepFinish := func(mid, reason string) (HighEvent, bool) {
+		t.Helper()
+		he, emit, term := mapToHighEvent(partUpdatedEvent(PartUpdatedData{
+			SessionID: "ses_1",
+			Part:      Part{ID: "prt_f_" + mid, MessageID: mid, Type: "step-finish", Reason: reason},
+		}), &assistantID, parts)
+		if !emit {
+			t.Fatalf("step-finish %s not emitted", mid)
+		}
+		return he, term
+	}
+
+	// 第一轮 A
+	stepStart("msg_a")
+	if _, term := stepFinish("msg_a", "tool-calls"); term {
+		t.Fatal("tool-calls step-finish must not terminate")
+	}
+	// 第二轮 B：step-start 跟随新 messageID
+	stepStart("msg_b")
+	if assistantID != "msg_b" {
+		t.Fatalf("assistantID = %q, want follow to msg_b", assistantID)
+	}
+	// 第二轮 text delta 必须映射为 text（pump 过滤以 assistantID 为准）
+	he, emit, _ := mapToHighEvent(Event{Type: EventMessagePartDelta, Properties: jsonRaw(mustJSON(
+		PartDeltaData{SessionID: "ses_1", MessageID: "msg_b", PartID: "prt_t_b", Field: "text", Delta: "第二轮"}))}, &assistantID, parts)
+	if !emit || he.Kind() != HighEventText || he.Text() != "第二轮" {
+		t.Errorf("round-B delta: %+v emit=%v", he, emit)
+	}
+	// 第二轮 step-finish(stop) 必须是终止 result
+	he, term := stepFinish("msg_b", "stop")
+	if !term || he.Kind() != HighEventResult || he.MessageID() != "msg_b" {
+		t.Errorf("round-B finish: %+v term=%v", he, term)
+	}
+}
+
+// TestMapToHighEvent_StepFollowIdempotent：同一 messageID 多 step（工具+文本同轮）
+// 重复跟随是幂等的，assistantID 不变。
+func TestMapToHighEvent_StepFollowIdempotent(t *testing.T) {
+	var assistantID string
+	parts := partTracker{}
+	for i := 0; i < 3; i++ {
+		mapToHighEvent(partUpdatedEvent(PartUpdatedData{
+			SessionID: "ses_1",
+			Part:      Part{ID: "prt_s", MessageID: "msg_a", Type: "step-start"},
+		}), &assistantID, parts)
+	}
+	if assistantID != "msg_a" {
+		t.Errorf("assistantID = %q, want msg_a", assistantID)
+	}
+}
+
+// TestMapToHighEvent_ToolDeltaKeepOneWayLock：tool/delta 分支保持单向锁定，
+// 不跟随新 messageID（delta 可能先于 part.updated 到达，跟随会丢首轮文本）。
+func TestMapToHighEvent_ToolDeltaKeepOneWayLock(t *testing.T) {
+	var assistantID string
+	parts := partTracker{}
+	mapToHighEvent(partUpdatedEvent(PartUpdatedData{
+		SessionID: "ses_1",
+		Part:      Part{ID: "prt_s", MessageID: "msg_a", Type: "step-start"},
+	}), &assistantID, parts)
+
+	// tool part 携带其他 messageID：不跟随
+	mapToHighEvent(partUpdatedEvent(PartUpdatedData{SessionID: "ses_1", Part: Part{
+		ID: "prt_t", MessageID: "msg_x", Type: "tool", Tool: "bash",
+		State: &ToolState{Status: "running"},
+	}}), &assistantID, parts)
+	// delta 携带其他 messageID：不跟随
+	mapToHighEvent(Event{Type: EventMessagePartDelta, Properties: jsonRaw(mustJSON(
+		PartDeltaData{SessionID: "ses_1", MessageID: "msg_y", PartID: "prt_t1", Delta: "d"}))}, &assistantID, parts)
+
+	if assistantID != "msg_a" {
+		t.Errorf("assistantID = %q, want one-way lock on msg_a", assistantID)
+	}
+}
+
 // TestMapToHighEvent_SessionError：session.error 的服务端错误文本必须落在 text 字段，
 // 对齐 lark-bridge 旧 CLI 版 {kind:EventError, text:msg} 约定；调用方 ev.Text()
 // 直接拿到错误（quota/auth/工具详情），不走通用 fallback。

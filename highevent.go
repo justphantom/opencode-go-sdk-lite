@@ -94,10 +94,10 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 			// 只在 assistant 专属 part 上锁定 assistantID：
 			// part.updated 也会回显用户输入的 text part（MessageID 是 user 消息），
 			// 抢锁会把后续 assistant delta 全部过滤掉（实测踩坑）。
-			trackAssistantID(assistantID, p.MessageID)
+			followAssistantID(assistantID, p.MessageID)
 			return HighEvent{kind: HighEventStepStart, sessionID: d.SessionID, messageID: p.MessageID}, true, false
 		case PartTypeStepFinish:
-			trackAssistantID(assistantID, p.MessageID)
+			followAssistantID(assistantID, p.MessageID)
 			// reason="stop" 是成功终止；其他 reason（如 tool-calls）按 step_finish 报告。
 			// result 字段留空，由 pump 在关闭 chan 前回填累积的 text delta。
 			he := HighEvent{
@@ -207,6 +207,17 @@ func trackAssistantID(p *string, id string) {
 	if *p == "" {
 		*p = id
 	}
+}
+
+// followAssistantID 无条件跟随新一轮 assistant message 起点：step-start/step-finish
+// 必属 assistant 且先于该 message 的 text/tool/delta 到达，多轮 agent-loop 下
+// assistantID 必须换到当前轮 messageID，否则新轮的 part 事件会被 pump 过滤丢弃。
+// tool/delta 不用它：delta 可能先于 part.updated 到达，过早跟随会丢首轮文本。
+func followAssistantID(p *string, id string) {
+	if p == nil || id == "" {
+		return
+	}
+	*p = id
 }
 
 func jsonRawOrNil(m map[string]any) []byte {

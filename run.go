@@ -72,7 +72,8 @@ func (c *Client) Run(ctx context.Context, stream *GlobalEventStream, opts RunOpt
 }
 
 // pump 把原始 Event 流转换为 HighEvent 流。
-// userMessageID 用于首事件 HighEventPrompt；assistantID 锁定首轮 part 事件的 assistantMessageID。
+// userMessageID 用于首事件 HighEventPrompt；assistantID 跟随最新 step 的
+// assistantMessageID（多轮 agent-loop 每轮换 messageID，见 followAssistantID）。
 func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID, userMessageID string, src <-chan Event, out chan<- HighEvent) {
 	defer close(out)
 	defer stream.Unsubscribe(sessionID)
