@@ -50,6 +50,7 @@ func TestIntegration(t *testing.T) {
 	t.Run("Negative", func(t *testing.T) { testNegative(t, c) })
 	t.Run("SessionEvents", func(t *testing.T) { testSessionEventsLive(t, c) })
 	t.Run("GoldenCapture", func(t *testing.T) { testGoldenCapture(t, c) })
+	t.Run("GoldenReasoningCapture", func(t *testing.T) { testGoldenReasoningCapture(t, c) })
 	t.Run("Interrupt", func(t *testing.T) { testInterrupt(t, c) })
 	t.Run("DirectoryRouting", func(t *testing.T) { testDirectoryRouting(t, c) })
 	t.Run("GlobalStreamRun", func(t *testing.T) { testGlobalStreamRun(t, c) })
@@ -402,6 +403,143 @@ func testGoldenCapture(t *testing.T, c *Client) {
 		t.Fatalf("写 golden: %v", err)
 	}
 	t.Logf("captured %d frames -> testdata/sse_frames.txt", frames)
+}
+
+// testGoldenReasoningCapture 用 reasoning 模型抓取一轮含思考内容的 /event 帧，
+// 写入 testdata/sse_frames_reasoning.txt，供 sse_golden_test.go 的
+// TestSSEGoldenReasoningReplay 回放，锚定 reasoning 的线上 delivery 形状
+// （part.updated{type:reasoning} 建块 → part.delta 流式）。
+//
+// reasoning 模型对简单题可能不思考、对难题可能陷入超长推理；故用中等难度题 +
+// 多轮重试 + reasoning/text delta 各自写入上限，保证抓到完整且紧凑的生命周期。
+//
+// 模型可由环境变量覆盖：OPENCODE_RC_PROVIDER / OPENCODE_RC_MODEL（默认
+// zhipuai-coding-plan / glm-5.1，需 reasoning-capable 且 provider interleaved
+// 字段为 reasoning_content）。
+func testGoldenReasoningCapture(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	provider := os.Getenv("OPENCODE_RC_PROVIDER")
+	modelID := os.Getenv("OPENCODE_RC_MODEL")
+	if provider == "" {
+		provider = "zhipuai-coding-plan"
+	}
+	if modelID == "" {
+		modelID = "glm-5.1"
+	}
+
+	ses, err := c.CreateSession(ctx, &CreateSessionReq{
+		Model: &ModelRef{ID: modelID, ProviderID: provider},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = c.DeleteSession(context.Background(), ses.ID) })
+
+	stream, err := c.NewGlobalEventStream(ctx, nil)
+	if err != nil {
+		t.Fatalf("NewGlobalEventStream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	rawCh := stream.Subscribe(ses.ID)
+
+	prompts := []string{
+		"小明有12颗糖，分给3个朋友每人一样多后自己又吃了2颗，还剩几颗？请简短给出思考过程和答案。",
+		"一根绳子对折三次后量得1米，绳子原长多少米？请简短说明推理。",
+		"如果今天是星期三，60天后是星期几？请简短推理后作答。",
+	}
+	const reasoningWriteCap, textWriteCap = 8, 8
+	var buf strings.Builder
+	frames, reasonDelta, reasonWritten, textWritten := 0, 0, 0, 0
+	sawFinish := false
+	for _, prompt := range prompts {
+		buf.Reset()
+		frames, reasonDelta, reasonWritten, textWritten = 0, 0, 0, 0
+		sawFinish = false
+		partType := map[string]string{}
+		if _, err := c.Prompt(ctx, ses.ID, &PromptReq{
+			Model: &ModelRef{ID: modelID, ProviderID: provider},
+			Parts: []PromptPart{{Type: PartTypeText, Text: prompt}},
+		}); err != nil {
+			t.Fatalf("Prompt: %v", err)
+		}
+		turnDone := false
+		deadline := time.After(45 * time.Second)
+		for !turnDone {
+			select {
+			case ev, ok := <-rawCh:
+				if !ok {
+					turnDone = true
+					continue
+				}
+				keep := ev.Type == EventMessagePartUpdated ||
+					ev.Type == EventMessagePartDelta ||
+					ev.Type == EventSessionIdle || ev.Type == EventSessionError
+				if !keep {
+					continue
+				}
+				if ev.Type == EventMessagePartUpdated {
+					var d PartUpdatedData
+					if json.Unmarshal(ev.Properties, &d) == nil && d.Part.Type != "" {
+						partType[d.Part.ID] = d.Part.Type
+					}
+				}
+				isReasonDelta, isTextDelta := false, false
+				if ev.Type == EventMessagePartDelta {
+					var d PartDeltaData
+					if json.Unmarshal(ev.Properties, &d) == nil {
+						switch partType[d.PartID] {
+						case PartTypeReasoning:
+							isReasonDelta = true
+							reasonDelta++
+						case PartTypeText, "":
+							isTextDelta = true
+						}
+					}
+				}
+				if isReasonDelta && reasonWritten >= reasoningWriteCap {
+					continue
+				}
+				if isTextDelta && textWritten >= textWriteCap {
+					continue
+				}
+				if isReasonDelta {
+					reasonWritten++
+				}
+				if isTextDelta {
+					textWritten++
+				}
+				if ev.ID != "" {
+					fmt.Fprintf(&buf, "id: %s\n", ev.ID)
+				}
+				fmt.Fprintf(&buf, "data: {\"id\":%q,\"type\":%q,\"properties\":%s}\n\n",
+					ev.ID, ev.Type, string(ev.Properties))
+				frames++
+				if ev.Type == EventSessionIdle || ev.Type == EventSessionError {
+					sawFinish = true
+					turnDone = true
+				}
+			case <-deadline:
+				turnDone = true
+			}
+		}
+		t.Logf("prompt=%q… frames=%d reasoningDelta=%d finish=%v", prompt[:14], frames, reasonDelta, sawFinish)
+		if reasonDelta > 0 && sawFinish {
+			break
+		}
+	}
+	if reasonDelta == 0 {
+		t.Skipf("model=%s 未输出 reasoning_content，跳过 golden 生成（换 reasoning 模型重试）", modelID)
+	}
+	if err := os.MkdirAll("testdata", 0o755); err != nil {
+		t.Fatalf("mkdir testdata: %v", err)
+	}
+	if err := os.WriteFile("testdata/sse_frames_reasoning.txt", []byte(buf.String()), 0o644); err != nil {
+		t.Fatalf("写 reasoning golden: %v", err)
+	}
+	t.Logf("captured %d frames (%d reasoning delta) -> testdata/sse_frames_reasoning.txt; finish=%v",
+		frames, reasonDelta, sawFinish)
 }
 
 // testInterrupt 发长任务后立即中断，断言收到终止信号。

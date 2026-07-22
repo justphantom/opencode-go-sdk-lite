@@ -160,8 +160,13 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 			return HighEvent{}, false, false
 		}
 		trackAssistantID(assistantID, d.MessageID)
-		// part 类型未知（delta 先于 part.updated 到达）时按 text 处理，
-		// 与实测时序（part.updated 先达）一致。
+		// part 类型未知时按 text 处理。这看似脆弱（若某 reasoning delta 抢在
+		// part.updated 登记前到达会被误判为 text），实则由 part 生命周期保证安全：
+		// 服务端必先发 part.updated{type} 建块、再流 delta 进去，单条 /event 长连
+		// 又保 TCP 顺序，故「type 登记」先于「delta」是架构必然而非实测凑巧。
+		// delta 本身不带 part 类型（field 恒为 "text"，text/reasoning 共用），
+		// 无更优默认；真误判也只是把思考增量混进文本流观感，最终回复走 FinalText
+		// 落库文本不受污染。改动此默认前须先引入「未知 partID 缓冲待决」机制。
 		if parts[d.PartID] == PartTypeReasoning {
 			return HighEvent{kind: HighEventThinking, sessionID: d.SessionID, messageID: d.MessageID, text: d.Delta}, true, false
 		}
