@@ -245,7 +245,7 @@ for ev := range ch {
 ## 高层 Run + HighEvent（推荐）
 
 `Run` 把「创建/复用 session → 订阅全局流 → 发 prompt_async → 按 assistantMessageID 过滤 → 合成终止事件」打包，
-把原始事件归纳为 9 种 `HighEventKind`，channel close 前必有终止事件（result/error）。
+把原始事件归纳为 11 种 `HighEventKind`，channel close 前必有终止事件（result/error）。
 首事件必为 `HighEventPrompt`（携带 SDK 生成的 user messageID 与 sessionID）。
 
 ```go
@@ -272,6 +272,10 @@ for ev := range out {
 		fmt.Printf("\n[tool: %s] %s\n", ev.ToolName(), ev.ToolInput())
 	case oc.HighEventToolResult:
 		if ev.IsToolError() { fmt.Println("  (failed)") }
+	case oc.HighEventPermissionAsked:
+		// agent 请求权限：ev.PermissionAsked() → ReplyPermission 应答（见下文）
+	case oc.HighEventQuestionAsked:
+		// agent 向用户提问：ev.QuestionAsked() → ReplyQuestion/RejectQuestion 应答
 	case oc.HighEventResult:
 		fmt.Printf("\n[done] in=%d out=%d cost=%.4f\n",
 			ev.InputTokens(), ev.OutputTokens(), ev.Cost())
@@ -285,6 +289,19 @@ for ev := range out {
 完成信号是 step-finish part 且 `reason="stop"`（实测确认；`session.idle` 作兜底终止）。
 `HighEventResult` 的结果文本优先取服务端落库文本（`GetMessage` 的 `FinalText`，免疫 SSE 丢帧）；
 取不到或为空则回退 SSE 累积的 text delta（run.go:120-151）。
+
+### 权限/提问事件（permission_asked / question_asked）
+
+agent 运行中请求权限（bash 等）或向用户提问时，`Run` 透出 `HighEventPermissionAsked` /
+`HighEventQuestionAsked`（非终止：chan 不 close，turn 挂起等应答）。消费模式：
+
+1. 收到 asked 事件，取 `ev.PermissionAsked()` / `ev.QuestionAsked()`（仅对应 kind 非 nil）；
+2. 调 `ReplyPermission` / `ReplyQuestion` / `RejectQuestion` 应答；
+3. 应答后 turn 继续流式输出。
+
+不回复 serve 端 agent 会一直挂起——中断/超时务必回复 reject。
+关联工具调用用 payload 的 `Tool.CallID`，不要靠时序：asked 相对对应 tool_use（running）
+事件的先后不稳定（实测 permission.asked 在 running 之后、question.asked 在 running 之前）。
 
 ## 辅助 API
 
@@ -302,6 +319,6 @@ for ev := range out {
 
 - 零第三方依赖，仅标准库
 - 原始事件：`Type` 常量 + `Properties json.RawMessage`（不做 88 事件强类型 union，仅高频事件附 `*Data` struct）
-- 高层事件：`HighEventKind` 9 种 + Getter（封装在 `Run`）
+- 高层事件：`HighEventKind` 11 种 + Getter（封装在 `Run`）
 - 全局流不支持续传，断连窗口事件丢失
 - 其他未覆盖接口见「接口清单 → 非目标」

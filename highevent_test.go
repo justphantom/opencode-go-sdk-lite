@@ -161,6 +161,92 @@ func TestMapToHighEvent_StepFinishNonStop(t *testing.T) {
 	}
 }
 
+// TestMapToHighEvent_PermissionAsked：permission.asked 映射为非终止事件，
+// payload 含 tool 关联（golden 取自 docs/sse-capture-permission-question.log 实测流）。
+func TestMapToHighEvent_PermissionAsked(t *testing.T) {
+	var assistantID string
+	parts := partTracker{}
+	props := `{"id":"per_1","sessionID":"ses_1","permission":"bash","patterns":["ls -la /tmp/oc-ptest"],"metadata":{"command":"ls -la /tmp/oc-ptest"},"always":["ls *"],"tool":{"messageID":"msg_a","callID":"call_1"}}`
+	he, emit, term := mapToHighEvent(Event{Type: EventPermissionAsked, Properties: jsonRaw(props)}, &assistantID, parts)
+	if !emit || term || he.Kind() != HighEventPermissionAsked || he.SessionID() != "ses_1" {
+		t.Fatalf("permission.asked: %+v emit=%v term=%v", he, emit, term)
+	}
+	// messageID 必须为空：session 级事件，空值才能绕过 pump 的 assistantID 过滤
+	if he.MessageID() != "" {
+		t.Errorf("MessageID() = %q, want empty", he.MessageID())
+	}
+	d := he.PermissionAsked()
+	if d == nil {
+		t.Fatal("PermissionAsked() is nil")
+	}
+	if d.ID != "per_1" || d.Permission != "bash" {
+		t.Errorf("payload = %+v", d)
+	}
+	if len(d.Patterns) != 1 || d.Patterns[0] != "ls -la /tmp/oc-ptest" {
+		t.Errorf("patterns = %v", d.Patterns)
+	}
+	if len(d.Always) != 1 || d.Always[0] != "ls *" {
+		t.Errorf("always = %v", d.Always)
+	}
+	if d.Metadata["command"] != "ls -la /tmp/oc-ptest" {
+		t.Errorf("metadata = %v", d.Metadata)
+	}
+	if d.Tool == nil || d.Tool.MessageID != "msg_a" || d.Tool.CallID != "call_1" {
+		t.Errorf("tool = %+v", d.Tool)
+	}
+	if he.QuestionAsked() != nil {
+		t.Error("QuestionAsked() must be nil for permission kind")
+	}
+	// 解码失败丢事件（对齐现有容错）
+	if _, emit, _ := mapToHighEvent(Event{Type: EventPermissionAsked, Properties: jsonRaw(`{bad`)}, &assistantID, parts); emit {
+		t.Error("bad json should drop event")
+	}
+}
+
+// TestMapToHighEvent_QuestionAsked：question.asked 映射为非终止事件，
+// 覆盖多问题 + options + custom/multiple 字段（字段名按实测流）。
+func TestMapToHighEvent_QuestionAsked(t *testing.T) {
+	var assistantID string
+	parts := partTracker{}
+	props := `{"id":"que_1","sessionID":"ses_1","questions":[` +
+		`{"question":"你想喝什么？","header":"饮品选择","options":[{"label":"咖啡","description":"含咖啡因饮品"},{"label":"茶","description":"茶类饮品"}]},` +
+		`{"question":"选哪些功能？","header":"功能","options":[{"label":"A","description":"a"}],"multiple":true,"custom":true}` +
+		`],"tool":{"messageID":"msg_a","callID":"call_2"}}`
+	he, emit, term := mapToHighEvent(Event{Type: EventQuestionAsked, Properties: jsonRaw(props)}, &assistantID, parts)
+	if !emit || term || he.Kind() != HighEventQuestionAsked || he.SessionID() != "ses_1" {
+		t.Fatalf("question.asked: %+v emit=%v term=%v", he, emit, term)
+	}
+	if he.MessageID() != "" {
+		t.Errorf("MessageID() = %q, want empty", he.MessageID())
+	}
+	d := he.QuestionAsked()
+	if d == nil {
+		t.Fatal("QuestionAsked() is nil")
+	}
+	if d.ID != "que_1" || len(d.Questions) != 2 {
+		t.Fatalf("payload = %+v", d)
+	}
+	q0, q1 := d.Questions[0], d.Questions[1]
+	if q0.Question != "你想喝什么？" || q0.Header != "饮品选择" || len(q0.Options) != 2 {
+		t.Errorf("q0 = %+v", q0)
+	}
+	if q0.Options[0].Label != "咖啡" || q0.Options[0].Description != "含咖啡因饮品" {
+		t.Errorf("q0.options[0] = %+v", q0.Options[0])
+	}
+	if !q1.Multiple || !q1.Custom {
+		t.Errorf("q1 multiple/custom = %v/%v, want true/true", q1.Multiple, q1.Custom)
+	}
+	if d.Tool == nil || d.Tool.CallID != "call_2" {
+		t.Errorf("tool = %+v", d.Tool)
+	}
+	if he.PermissionAsked() != nil {
+		t.Error("PermissionAsked() must be nil for question kind")
+	}
+	if _, emit, _ := mapToHighEvent(Event{Type: EventQuestionAsked, Properties: jsonRaw(`{bad`)}, &assistantID, parts); emit {
+		t.Error("bad json should drop event")
+	}
+}
+
 // TestMapToHighEvent_SessionError：session.error 的服务端错误文本必须落在 text 字段，
 // 对齐 lark-bridge 旧 CLI 版 {kind:EventError, text:msg} 约定；调用方 ev.Text()
 // 直接拿到错误（quota/auth/工具详情），不走通用 fallback。
