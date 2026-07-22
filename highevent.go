@@ -2,7 +2,7 @@ package opencode
 
 import "encoding/json"
 
-// HighEventKind 是高层事件的语义类别（9 种）。
+// HighEventKind 是高层事件的语义类别（11 种）。
 // 不同于原始 Event（V1 经典事件体系），HighEvent 把过程流归纳为少数可消费类别。
 type HighEventKind string
 
@@ -16,6 +16,10 @@ const (
 	HighEventStepFinish HighEventKind = "step_finish"
 	HighEventResult     HighEventKind = "result" // 终止-成功
 	HighEventError      HighEventKind = "error"  // 终止-失败
+
+	// asked 两个事件均为非终止：agent 挂起等用户应答，应答后 turn 继续。
+	HighEventPermissionAsked HighEventKind = "permission_asked"
+	HighEventQuestionAsked   HighEventKind = "question_asked"
 )
 
 // HighEvent 是 Run 对外暴露的高层事件。字段非导出，用 Getter 访问，
@@ -36,6 +40,8 @@ type HighEvent struct {
 	cacheRead    int
 	cacheWrite   int
 	cost         float64
+	permission   *PermissionAskedData
+	question     *QuestionAskedData
 }
 
 // Getter
@@ -54,6 +60,12 @@ func (e HighEvent) OutputTokens() int   { return e.outputTokens }
 func (e HighEvent) CacheRead() int      { return e.cacheRead }
 func (e HighEvent) CacheWrite() int     { return e.cacheWrite }
 func (e HighEvent) Cost() float64       { return e.cost }
+
+// PermissionAsked 仅 kind==HighEventPermissionAsked 时非 nil，其余 kind 返回 nil。
+func (e HighEvent) PermissionAsked() *PermissionAskedData { return e.permission }
+
+// QuestionAsked 仅 kind==HighEventQuestionAsked 时非 nil，其余 kind 返回 nil。
+func (e HighEvent) QuestionAsked() *QuestionAskedData { return e.question }
 
 // partTracker 记录 partID → part.type，供 message.part.delta 路由
 // （delta 事件本身不带 part 类型，实测其 field 恒为 "text"）。
@@ -168,6 +180,22 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 		// 错误文本一律走 text，对齐 lark-bridge 旧 CLI 版 {kind:EventError, text:msg} 约定。
 		// 调用方 ev.Text() 直接拿到服务端错误（quota/auth/工具详情），不走通用 fallback。
 		return HighEvent{kind: HighEventError, sessionID: d.SessionID, isError: true, text: formatErrorMap(d.Error)}, true, true
+
+	case EventPermissionAsked:
+		var d PermissionAskedData
+		if err := json.Unmarshal(ev.Properties, &d); err != nil {
+			return HighEvent{}, false, false
+		}
+		// messageID 留空：asked 是 session 级请求，不属于某条 assistant 消息；
+		// 空值天然绕过 pump 的 assistantID 过滤（该过滤只丢带其他 messageID 的 part 事件）。
+		return HighEvent{kind: HighEventPermissionAsked, sessionID: d.SessionID, permission: &d}, true, false
+
+	case EventQuestionAsked:
+		var d QuestionAskedData
+		if err := json.Unmarshal(ev.Properties, &d); err != nil {
+			return HighEvent{}, false, false
+		}
+		return HighEvent{kind: HighEventQuestionAsked, sessionID: d.SessionID, question: &d}, true, false
 	}
 	return HighEvent{}, false, false
 }

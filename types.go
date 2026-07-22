@@ -518,6 +518,8 @@ type PermissionAskedData struct {
 	Patterns   []string       `json:"patterns,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
 	Always     []string       `json:"always,omitempty"`
+	// 实测 serve 会发 tool 字段（关联发起权限请求的工具调用），spec 未声明。
+	Tool *PermissionTool `json:"tool,omitempty"`
 }
 
 // QuestionAskedData 是 question.asked 的 data；与 QuestionRequest 同构。
