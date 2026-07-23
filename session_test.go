@@ -211,6 +211,60 @@ func TestSessionMessage_FinalText(t *testing.T) {
 	}
 }
 
+func TestSessionMessage_ReasoningText(t *testing.T) {
+	cases := []struct {
+		name  string
+		parts []json.RawMessage
+		want  string
+	}{
+		{
+			name:  "单段 reasoning 原文返回",
+			parts: []json.RawMessage{json.RawMessage(`{"type":"reasoning","text":"想一下"}`)},
+			want:  "想一下",
+		},
+		{
+			name: "多段 reasoning 以换行连接",
+			parts: []json.RawMessage{
+				json.RawMessage(`{"type":"reasoning","text":"先想"}`),
+				json.RawMessage(`{"type":"reasoning","text":"再想"}`),
+			},
+			want: "先想\n再想",
+		},
+		{
+			name:  "空 text 的 reasoning part 跳过",
+			parts: []json.RawMessage{json.RawMessage(`{"type":"reasoning","text":""}`)},
+			want:  "",
+		},
+		{
+			name:  "无 reasoning part 返回空",
+			parts: []json.RawMessage{json.RawMessage(`{"type":"text","text":"正文"}`)},
+			want:  "",
+		},
+		{
+			name: "与 text part 混合只取 reasoning",
+			parts: []json.RawMessage{
+				json.RawMessage(`{"type":"text","text":"正文"}`),
+				json.RawMessage(`{"type":"reasoning","text":"思考"}`),
+				json.RawMessage(`{"type":"text","text":"再正文"}`),
+			},
+			want: "思考",
+		},
+		{
+			name:  "坏 JSON part 跳过",
+			parts: []json.RawMessage{json.RawMessage(`{bad json`), json.RawMessage(`{"type":"reasoning","text":"好"}`)},
+			want:  "好",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := SessionMessage{Parts: tc.parts}
+			if got := m.ReasoningText(); got != tc.want {
+				t.Errorf("ReasoningText = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPrompt_respectsGivenIDs(t *testing.T) {
 	var gotBody struct {
 		MessageID string       `json:"messageID"`

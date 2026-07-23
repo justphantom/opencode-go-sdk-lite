@@ -187,6 +187,24 @@ func (m SessionMessage) FinalText() string {
 	return b.String()
 }
 
+// ReasoningText 组装消息的完整思考内容：拼接 type=="reasoning" 的
+// part.text，多段以 "\n" 分隔（实测一条 message 通常仅一段）。
+// 解析失败/空文本 part 跳过；服务端未落库思考时返回 ""。
+func (m SessionMessage) ReasoningText() string {
+	var parts []string
+	for _, raw := range m.Parts {
+		var p Part
+		if err := json.Unmarshal(raw, &p); err != nil {
+			continue
+		}
+		if p.Type != PartTypeReasoning || p.Text == "" {
+			continue
+		}
+		parts = append(parts, p.Text)
+	}
+	return strings.Join(parts, "\n")
+}
+
 // MessageInfo 是 User/Assistant 消息的公共字段（assistant 专有字段在 user 消息上为零值）。
 // 更多字段（parts 之外的）请按 role 自行反序列化 Parts。
 type MessageInfo struct {
