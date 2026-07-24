@@ -64,6 +64,7 @@ func TestIntegration(t *testing.T) {
 	t.Run("PromptFileLive", func(t *testing.T) { testPromptFileLive(t, c) })
 	t.Run("PromptToolsDisabledLive", func(t *testing.T) { testPromptToolsDisabledLive(t, c) })
 	t.Run("FinalTextLive", func(t *testing.T) { testFinalTextLive(t, c) })
+	t.Run("ListChildrenLive", func(t *testing.T) { testListChildrenLive(t, c) })
 }
 
 func testHealth(t *testing.T, c *Client) {
@@ -1031,7 +1032,44 @@ func testFinalTextLive(t *testing.T, c *Client) {
 	}
 }
 
-// testPromptToolsDisabledLive 禁用 bash 后发号施令，断言全程无 bash 工具调用。
+// testListChildrenLive 验证 ListChildren 端点：用 CreateSession{parentID} 建立确定性的
+// 父子关系，ListChildren 必须返回该子 session 且 parentID 指向父。
+// childTracker 的端到端 asked 转发由单元测试（run_child_test.go）覆盖，这里只锚定 API。
+// 不依赖 task 工具的模型行为（那个不可控）。
+func testListChildrenLive(t *testing.T, c *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	parent, err := c.CreateSession(ctx, &CreateSessionReq{})
+	if err != nil {
+		t.Fatalf("CreateSession parent: %v", err)
+	}
+	t.Cleanup(func() { _ = c.DeleteSession(context.Background(), parent.ID) })
+
+	child, err := c.CreateSession(ctx, &CreateSessionReq{ParentID: parent.ID})
+	if err != nil {
+		t.Fatalf("CreateSession child: %v", err)
+	}
+	t.Cleanup(func() { _ = c.DeleteSession(context.Background(), child.ID) })
+
+	children, err := c.ListChildren(ctx, parent.ID, "")
+	if err != nil {
+		t.Fatalf("ListChildren: %v", err)
+	}
+	var got *SessionInfo
+	for i := range children {
+		if children[i].ID == child.ID {
+			got = &children[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("ListChildren 未返回子 session %q: %+v", child.ID, children)
+	}
+	if got.ParentID != parent.ID {
+		t.Errorf("子 session parentID=%q, want %q", got.ParentID, parent.ID)
+	}
+	t.Logf("父=%q 子=%q parentID=%q", parent.ID, got.ID, got.ParentID)
+}
 func testPromptToolsDisabledLive(t *testing.T, c *Client) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

@@ -269,6 +269,25 @@ func (c *Client) GetMessage(ctx context.Context, sessionID, messageID string) (*
 	return &out, nil
 }
 
+// ListChildren 返回直接派生自指定会话的子 session（parentID=sessionID）。
+// directory 必须与父 Run 的 Location.Directory 一致：opencode serve 按 directory
+// 隔离 session 存储，不带 directory 时 serve 在默认上下文查找，跨目录会 404。
+//
+// 用途：subagent（task 工具）在独立子 session 中运行，其 permission.asked /
+// question.asked 事件的 sessionID 为子 sid，父 session 订阅者收不到。pump 用此
+// 接口周期性发现子 session，额外订阅子 sid 以转发 asked 事件。
+func (c *Client) ListChildren(ctx context.Context, sessionID, directory string) ([]SessionInfo, error) {
+	q := url.Values{}
+	if directory != "" {
+		q.Set("directory", directory)
+	}
+	var out []SessionInfo
+	if err := c.doJSON(ctx, http_GET, "/session/"+sessionID+"/children", q, nil, &out, 0); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HTTP 方法常量，避免多处裸字符串。
 const (
 	http_GET    = "GET"

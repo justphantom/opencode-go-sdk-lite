@@ -5,8 +5,8 @@ import "context"
 // ListQuestions 列出会话内挂起的问题请求。
 // V1 的 GET /question 是全局 pending 列表，此处按 sessionID 过滤。
 func (c *Client) ListQuestions(ctx context.Context, sessionID string) ([]QuestionRequest, error) {
-	var all []QuestionRequest
-	if err := c.doJSON(ctx, http_GET, "/question", nil, nil, &all, 0); err != nil {
+	all, err := c.listAllQuestions(ctx)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]QuestionRequest, 0, len(all))
@@ -16,6 +16,16 @@ func (c *Client) ListQuestions(ctx context.Context, sessionID string) ([]Questio
 		}
 	}
 	return out, nil
+}
+
+// listAllQuestions 拉取全局 pending 问题列表（无 sessionID 过滤）。
+// pollAsked 在父+多子 session 场景下用一次拉取替代 N 次按 sid 查询。
+func (c *Client) listAllQuestions(ctx context.Context) ([]QuestionRequest, error) {
+	var all []QuestionRequest
+	if err := c.doJSON(ctx, http_GET, "/question", nil, nil, &all, 0); err != nil {
+		return nil, err
+	}
+	return all, nil
 }
 
 // ReplyQuestion 回答一条挂起的问题请求。answers 与 questions 一一对应。

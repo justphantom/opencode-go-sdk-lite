@@ -77,6 +77,28 @@ func (e HighEvent) TodoUpdated() *TodoUpdatedData { return e.todo }
 // （delta 事件本身不带 part 类型，实测其 field 恒为 "text"）。
 type partTracker map[string]string
 
+// mapAskedEvent 反序列化 permission.asked / question.asked 事件为 HighEvent。
+// 供 mapToHighEvent 与子 session forward 共享：两路来源（主订阅 src + 子 session
+// 转发）必须产出同构 HighEvent，否则去重与下游消费会失配。
+// 返回 ok=false 表示非 asked 事件或解析失败。
+func mapAskedEvent(ev Event) (HighEvent, bool) {
+	switch ev.Type {
+	case EventPermissionAsked:
+		var d PermissionAskedData
+		if err := json.Unmarshal(ev.Properties, &d); err != nil {
+			return HighEvent{}, false
+		}
+		return HighEvent{kind: HighEventPermissionAsked, sessionID: d.SessionID, permission: &d}, true
+	case EventQuestionAsked:
+		var d QuestionAskedData
+		if err := json.Unmarshal(ev.Properties, &d); err != nil {
+			return HighEvent{}, false
+		}
+		return HighEvent{kind: HighEventQuestionAsked, sessionID: d.SessionID, question: &d}, true
+	}
+	return HighEvent{}, false
+}
+
 // mapToHighEvent 把原始 Event 映射为 HighEvent。
 // 返回 ok=false 表示该原始事件不产生高层事件（如 session.updated、心跳等）。
 // isTerminal 标记终止事件（result/error），调用方据此 close chan。
@@ -193,20 +215,19 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 		return HighEvent{kind: HighEventError, sessionID: d.SessionID, isError: true, text: formatErrorMap(d.Error)}, true, true
 
 	case EventPermissionAsked:
-		var d PermissionAskedData
-		if err := json.Unmarshal(ev.Properties, &d); err != nil {
+		he, ok := mapAskedEvent(ev)
+		if !ok {
 			return HighEvent{}, false, false
 		}
 		// messageID 留空：asked 是 session 级请求，不属于某条 assistant 消息；
 		// 空值天然绕过 pump 的 assistantID 过滤（该过滤只丢带其他 messageID 的 part 事件）。
-		return HighEvent{kind: HighEventPermissionAsked, sessionID: d.SessionID, permission: &d}, true, false
-
+		return he, true, false
 	case EventQuestionAsked:
-		var d QuestionAskedData
-		if err := json.Unmarshal(ev.Properties, &d); err != nil {
+		he, ok := mapAskedEvent(ev)
+		if !ok {
 			return HighEvent{}, false, false
 		}
-		return HighEvent{kind: HighEventQuestionAsked, sessionID: d.SessionID, question: &d}, true, false
+		return he, true, false
 
 	case EventTodoUpdated:
 		var d TodoUpdatedData

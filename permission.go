@@ -9,8 +9,8 @@ import (
 // ListPermissions 列出会话内挂起的权限请求。
 // V1 的 GET /permission 是全局 pending 列表，此处按 sessionID 过滤。
 func (c *Client) ListPermissions(ctx context.Context, sessionID string) ([]PermissionRequest, error) {
-	var all []PermissionRequest
-	if err := c.doJSON(ctx, http_GET, "/permission", nil, nil, &all, 0); err != nil {
+	all, err := c.listAllPermissions(ctx)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]PermissionRequest, 0, len(all))
@@ -20,6 +20,16 @@ func (c *Client) ListPermissions(ctx context.Context, sessionID string) ([]Permi
 		}
 	}
 	return out, nil
+}
+
+// listAllPermissions 拉取全局 pending 权限列表（无 sessionID 过滤）。
+// pollAsked 在父+多子 session 场景下用一次拉取替代 N 次按 sid 查询。
+func (c *Client) listAllPermissions(ctx context.Context) ([]PermissionRequest, error) {
+	var all []PermissionRequest
+	if err := c.doJSON(ctx, http_GET, "/permission", nil, nil, &all, 0); err != nil {
+		return nil, err
+	}
+	return all, nil
 }
 
 // ReplyPermission 回复一条挂起的权限请求。

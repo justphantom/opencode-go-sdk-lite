@@ -27,6 +27,15 @@ var (
 	pollAskedToolDelay = 3 * time.Second
 )
 
+// pollChildrenInterval / taskEventDiscoverDelay 控制 subagent 子 session 的发现节奏。
+// task 工具在父 turn 进行中 spawn 子 session（异步），订阅时机不可同步等待 task 事件，
+// 用三触发：首次立即（覆盖订阅前已 spawn 的极端窗口）、ticker 兜底、task 事件后定时
+// 缩短延迟（subagent 创建到首次 asked 之间窗口）。var 便于测试 shrink。
+var (
+	pollChildrenInterval   = 5 * time.Second
+	taskEventDiscoverDelay = 1 * time.Second
+)
+
 // Run 执行一轮对话：建/复用 session → 订阅全局流 → 发 prompt_async →
 // 按 assistantMessageID 过滤 → 合成终止事件 → close chan。
 //
@@ -101,20 +110,30 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 	var accText strings.Builder
 	parts := partTracker{}
 
-	// asked 补偿轮询：全局 /event 无续传，断连窗口会丢 permission.asked/
-	// question.asked，turn 随即永久悬挂。靠 REST pending 列表兜底——asked 在
-	// 服务端一直挂起直到 reply/reject，SSE 丢了也能捞回。三触发：
-	//   - 首次立即：覆盖订阅前已发出的极端窗口
-	//   - 每 pollAskedInterval：被动兜底
-	//   - 工具相关事件后 pollAskedToolDelay：asked 紧随工具调用，缩短补偿延迟
-	// seenAsked 按 requestID 去重，SSE 与轮询任一先到即登记。
-	// todo 同窗口也会丢（todo.updated），用 GET /session/{id}/todo 的全量快照补偿，
-	// 按 json 签名去重（Todo 无 ID）。poll() 统一两路补偿，三触发点共用。
-	seenAsked := make(map[string]bool)
+	// askedTracker 跨主 src 与子 session 转发去重 asked（按 requestID 全局唯一）。
+	// 替代旧 seenAsked 局部 map：子 forward goroutine 并发写入，需要锁保护。
+	asked := &askedTracker{seen: make(map[string]bool)}
+
+	// childTracker 发现并订阅 subagent 子 session，把子的 asked 转发到 out。
+	// directory 从 stream.loc 读：GlobalEventStream 按 directory 隔离事件总线，
+	// 子 session 与父同 directory（task.ts 不改 directory），故子的 asked 一定走
+	// 本 stream，订阅子 sid 即可收到。directory 同时是 ListChildren 的 query。
+	directory := ""
+	if stream.loc != nil {
+		directory = stream.loc.Directory
+	}
+	child := newChildTracker(stream, out, asked, directory, ctx)
+	// defer 顺序（LIFO）：cancel forward → Wait 全部退出 → Unsubscribe 子 → close(out)。
+	// 必须保证 forward 全部停止后再 close(out)，否则写已关 chan 触发 panic。
+	defer child.close()
+
 	var lastTodo string
 	todoFirstPoll := true // 本 turn 首次 todo 轮询：复用 session 时吞掉上轮残留基线
 	poll := func() {
-		c.pollAsked(ctx, sessionID, seenAsked, out)
+		// asked 轮询覆盖父+全部已发现子 sid：subagent 的 asked 挂在子 sid 上，
+		// 只查父 sid 会漏。pollAsked 一次拉全局 pending 后按集合过滤。
+		sids := append([]string{sessionID}, child.sids()...)
+		c.pollAsked(ctx, sids, asked, out)
 		c.pollTodo(ctx, sessionID, &lastTodo, out, resumed && todoFirstPoll)
 		todoFirstPoll = false
 	}
@@ -123,6 +142,17 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 	compensateTimer := time.NewTimer(pollAskedToolDelay)
 	compensateTimer.Stop() // 默认 disarm，由 tool 事件 armTimer 触发
 	defer compensateTimer.Stop()
+
+	// 子 session 发现三触发：首次立即（覆盖订阅前已 spawn 的极端窗口）、
+	// ticker 兜底（subagent 创建到首次 asked 之间的窗口）、task 工具事件后定时
+	// （task 是 subagent 委派信号，主动缩短发现延迟）。
+	child.discover(sessionID)
+	childTicker := time.NewTicker(pollChildrenInterval)
+	defer childTicker.Stop()
+	taskDiscover := time.NewTimer(taskEventDiscoverDelay)
+	taskDiscover.Stop() // 默认 disarm，由 task tool_use 事件 armTimer 触发
+	defer taskDiscover.Stop()
+
 	poll() // 首次立即（asked + todo）
 
 	for {
@@ -135,6 +165,10 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			poll()
 		case <-compensateTimer.C:
 			poll()
+		case <-childTicker.C:
+			child.discover(sessionID)
+		case <-taskDiscover.C:
+			child.discover(sessionID)
 		case ev, ok := <-src:
 			if !ok {
 				// 流被关闭（stream.Close 或 Unsubscribe 由别处触发）；兜底终止。
@@ -150,8 +184,8 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			if he.MessageID() != "" && assistantID != "" && he.MessageID() != assistantID {
 				continue
 			}
-			// asked 去重：SSE 与轮询任一先到即登记，后到丢弃，避免重复投递
-			if !registerAsked(&he, seenAsked) {
+			// asked 去重：SSE/轮询/子转发任一先到即登记，后到丢弃，避免重复投递
+			if !asked.register(&he) {
 				continue
 			}
 			// todo 去重：按全量快照 json 签名，SSE 与轮询任一先到即登记，后到丢弃
@@ -162,6 +196,11 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			if he.Kind() == HighEventToolUse ||
 				(he.Kind() == HighEventStepFinish && he.Result() == "tool-calls") {
 				armTimer(compensateTimer, pollAskedToolDelay)
+			}
+			// task 工具即 subagent 委派：其调用事件后加速发现新 spawn 的子 session。
+			// 仅在 ToolUse（spawn 时）触发；ToolResult 时子 session 已 idle，无需再发现。
+			if he.Kind() == HighEventToolUse && he.ToolKind() == ToolKindSubagent {
+				armTimer(taskDiscover, taskEventDiscoverDelay)
 			}
 
 			// 累积 assistant 输出文本，供终止事件回填 result。
@@ -213,21 +252,30 @@ func (c *Client) fireAndForgetAbort(sessionID string) {
 }
 
 // pollAsked 补偿轮询服务端 pending 列表，捞回 SSE 丢失的 asked 事件。
-// 按 requestID 去重（seen）；轮询失败（网络/4xx）吞掉，不终止 pump——
+// 按 requestID 去重（askedTracker）；轮询失败（网络/4xx）吞掉，不终止 pump——
 // 补偿路径自身不可成为 turn 失败的原因。
-func (c *Client) pollAsked(ctx context.Context, sessionID string, seen map[string]bool, out chan<- HighEvent) {
+//
+// sids 为父 sid 与全部已发现子 sid 的并集：subagent 的 asked 挂在子 sid 上，
+// 只查父 sid 会漏。一次 listAll* 拉全局 pending 后按集合过滤，避免 N 次 RPC。
+func (c *Client) pollAsked(ctx context.Context, sids []string, asked *askedTracker, out chan<- HighEvent) {
+	want := make(map[string]struct{}, len(sids))
+	for _, s := range sids {
+		want[s] = struct{}{}
+	}
 	emit := func(id string, he HighEvent) {
-		if id == "" || seen[id] {
+		if id == "" || !asked.register(&he) {
 			return
 		}
-		seen[id] = true
 		select {
 		case <-ctx.Done():
 		case out <- he:
 		}
 	}
-	if perms, err := c.ListPermissions(ctx, sessionID); err == nil {
+	if perms, err := c.listAllPermissions(ctx); err == nil {
 		for _, p := range perms {
+			if _, ok := want[p.SessionID]; !ok {
+				continue
+			}
 			d := PermissionAskedData{
 				ID: p.ID, SessionID: p.SessionID, Permission: p.Permission,
 				Patterns: p.Patterns, Metadata: p.Metadata, Always: p.Always, Tool: p.Tool,
@@ -235,8 +283,11 @@ func (c *Client) pollAsked(ctx context.Context, sessionID string, seen map[strin
 			emit(p.ID, HighEvent{kind: HighEventPermissionAsked, sessionID: p.SessionID, permission: &d})
 		}
 	}
-	if qs, err := c.ListQuestions(ctx, sessionID); err == nil {
+	if qs, err := c.listAllQuestions(ctx); err == nil {
 		for _, q := range qs {
+			if _, ok := want[q.SessionID]; !ok {
+				continue
+			}
 			d := QuestionAskedData{
 				ID: q.ID, SessionID: q.SessionID, Questions: q.Questions, Tool: q.Tool,
 			}
