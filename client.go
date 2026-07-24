@@ -72,58 +72,50 @@ func New(baseURL string, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// doJSON 发送 JSON 请求并把响应解析到 out。status 为期望状态码，0 表示仅要求 2xx。
-func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, body any, out any, status int) error {
+// send 构造并发送请求，返回响应。body 非 nil 时按 JSON 序列化并设 Content-Type；
+// 调用方负责关闭 resp.Body。抽出以消除 doJSON/doEmpty 的请求构造重复。
+func (c *Client) send(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("opencode: marshal body: %w", err)
+			return nil, fmt.Errorf("opencode: marshal body: %w", err)
 		}
 		reader = bytes.NewReader(buf)
 	}
 	req, err := c.newRequest(ctx, method, path, query, reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("opencode: http: %w", err)
+		return nil, fmt.Errorf("opencode: http: %w", err)
+	}
+	return resp, nil
+}
+
+// doJSON 发送 JSON 请求并把响应解析到 out。status 为期望状态码，0 表示仅要求 2xx。
+func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, body any, out any, status int) error {
+	resp, err := c.send(ctx, method, path, query, body)
+	if err != nil {
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp, out, status)
 }
 
 // doEmpty 发送请求但无响应体，仅校验状态码。
+// out=nil 走 decodeJSON：2xx 直接返回，非 2xx 读 body 转 APIError，与 doJSON 同源。
 func (c *Client) doEmpty(ctx context.Context, method, path string, query url.Values, body any, status int) error {
-	var reader io.Reader
-	if body != nil {
-		buf, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("opencode: marshal body: %w", err)
-		}
-		reader = bytes.NewReader(buf)
-	}
-	req, err := c.newRequest(ctx, method, path, query, reader)
+	resp, err := c.send(ctx, method, path, query, body)
 	if err != nil {
 		return err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("opencode: http: %w", err)
-	}
 	defer func() { _ = resp.Body.Close() }()
-	if !statusOK(resp.StatusCode, status) {
-		raw, _ := io.ReadAll(resp.Body)
-		return parseAPIError(resp.StatusCode, raw)
-	}
-	return nil
+	return decodeJSON(resp, nil, status)
 }
 
 // Health 检查服务端是否可用。GET /global/health，解析 {healthy:true}，
@@ -157,6 +149,19 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}
+	return req, nil
+}
+
+// newEventRequest 构造 GET /event 的 SSE 请求，统一注入 Accept/Cache-Control 头。
+// 抽出以消除 connectStream（会话级流）与 GlobalEventStream.connect（全局长连）的前导重复，
+// 避免两头各设一次头导致漂移。
+func (c *Client) newEventRequest(ctx context.Context, loc *LocationRef) (*http.Request, error) {
+	req, err := c.newRequest(ctx, http_GET, "/event", locationQuery(loc), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
 	return req, nil
 }
 

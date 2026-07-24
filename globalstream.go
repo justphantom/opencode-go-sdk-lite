@@ -169,12 +169,10 @@ func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived boo
 	s.setConnCancel(cancel)
 	defer s.clearConnCancel()
 
-	req, err := s.c.newRequest(connCtx, http_GET, "/event", locationQuery(s.loc), nil)
+	req, err := s.c.newEventRequest(connCtx, s.loc)
 	if err != nil {
 		return true, true
 	}
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Cache-Control", "no-cache")
 
 	start := time.Now()
 	//nolint:bodyclose // Do 返 error 时 resp==nil 无需关；成功路径的 Body 在下方各错误分支统一 drainAndClose

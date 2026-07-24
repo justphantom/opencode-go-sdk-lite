@@ -72,6 +72,20 @@ func (c *Client) runSessionEvents(ctx context.Context, sessionID string, opt *Se
 	defer close(errc)
 
 	var attempt int
+	// retryAfter 累加 attempt、按上限与退避决定是否继续重连；返回 false 表示已耗尽
+	// attempts 或 ctx 取消（错误已写入 errc），调用方应 return。消除两处同函数内的重复块。
+	retryAfter := func(cause error) bool {
+		attempt++
+		if opt.MaxAttempts > 0 && attempt > opt.MaxAttempts {
+			errc <- fmt.Errorf("opencode: reconnect attempts exhausted: %w", cause)
+			return false
+		}
+		if !sleep(ctx, backoff(opt, attempt)) {
+			errc <- ctx.Err()
+			return false
+		}
+		return true
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			errc <- err
@@ -92,13 +106,7 @@ func (c *Client) runSessionEvents(ctx context.Context, sessionID string, opt *Se
 				return
 			}
 			// 可恢复：网络层错误或 5xx/429
-			attempt++
-			if opt.MaxAttempts > 0 && attempt > opt.MaxAttempts {
-				errc <- fmt.Errorf("opencode: reconnect attempts exhausted: %w", err)
-				return
-			}
-			if !sleep(ctx, backoff(opt, attempt)) {
-				errc <- ctx.Err()
+			if !retryAfter(err) {
 				return
 			}
 			continue
@@ -120,25 +128,17 @@ func (c *Client) runSessionEvents(ctx context.Context, sessionID string, opt *Se
 			errc <- err
 			return
 		}
-		attempt++
-		if opt.MaxAttempts > 0 && attempt > opt.MaxAttempts {
-			errc <- fmt.Errorf("opencode: reconnect attempts exhausted: %w", streamErr)
-			return
-		}
-		if !sleep(ctx, backoff(opt, attempt)) {
-			errc <- ctx.Err()
+		if !retryAfter(streamErr) {
 			return
 		}
 	}
 }
 
 func (c *Client) connectStream(ctx context.Context, loc *LocationRef) (*http.Response, error) {
-	req, err := c.newRequest(ctx, http_GET, "/event", locationQuery(loc), nil)
+	req, err := c.newEventRequest(ctx, loc)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Cache-Control", "no-cache")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
