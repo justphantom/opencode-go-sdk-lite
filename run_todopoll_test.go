@@ -319,39 +319,19 @@ func TestRun_TodoPollErrorSwallowed(t *testing.T) {
 }
 
 // newTodoFailServer 构造 /session/{id}/todo 永远返回指定错误码的 mock 服务，
-// 用于验证 pollTodo 吞错。
+// 用于验证 pollTodo 吞错。共享骨架见 runMockServer。
 func newTodoFailServer(t *testing.T, sessionID, frames string, todoStatus int) *httptest.Server {
 	t.Helper()
-	promptCh := make(chan struct{}, 4)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/session" && r.Method == "POST":
-			_, _ = w.Write([]byte(`{"id":"` + sessionID + `","projectID":"global","agent":"build","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1},"title":"t","directory":"/tmp"}`))
-		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/prompt_async"):
-			w.WriteHeader(204)
-			promptCh <- struct{}{}
-		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/abort"):
-			w.WriteHeader(200)
-		case strings.Contains(r.URL.Path, "/message/") && r.Method == "GET":
-			_, _ = w.Write([]byte(`{"info":{"id":"` + assistantMsgID + `","sessionID":"` + sessionID + `","role":"assistant"},"parts":[{"type":"text","text":"OK"}]}`))
-		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/todo"):
-			w.WriteHeader(todoStatus)
-		case r.URL.Path == "/event":
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(200)
-			fl := w.(http.Flusher)
-			select {
-			case <-promptCh:
-			case <-r.Context().Done():
-				return
+	return runMockServer(t, runServerConfig{
+		sessionID:  sessionID,
+		frames:     func(string) string { return frames },
+		eventDelay: 30 * time.Millisecond,
+		extra: func(w http.ResponseWriter, r *http.Request) bool {
+			if strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/todo") {
+				w.WriteHeader(todoStatus)
+				return true
 			}
-			time.Sleep(30 * time.Millisecond)
-			_, _ = w.Write([]byte(frames))
-			fl.Flush()
-			<-r.Context().Done()
-		default:
-			w.WriteHeader(404)
-		}
-	}))
-	return srv
+			return false
+		},
+	})
 }

@@ -10,30 +10,40 @@ import (
 	"time"
 )
 
-// setupRunServer 构造一个 mock 服务：
-//   - POST /session 返回固定 sessionID
-//   - POST /session/{id}/prompt_async 返回 204
-//   - POST /session/{id}/abort 返回 200
-//   - GET /event 推送 framesFunc 指定的事件帧序列后保持连接
-//
-// framesFunc(sessionID) 返回要推送的字节流。
-func setupRunServer(t *testing.T, sessionID string, framesFunc func(sid string) string) (*httptest.Server, *bool) {
+// runServerConfig 描述 run 系列测试共享的 mock 服务骨架，消除 setupRunServer /
+// askedPollServer / newTodoFailServer 三份同构路由的重复。
+type runServerConfig struct {
+	sessionID  string
+	frames     func(sid string) string // /event 推送一次的帧序列
+	eventDelay time.Duration           // prompt 到达后写 frames 前的等待，让 Subscribe 就绪
+	onAbort    func()                  // POST .../abort 的副作用
+	// extra 处理变体路由（/permission、/question、/todo），返回 true 表示已处理；
+	// 在 GET .../message/ 之后、/event 之前判定。
+	extra func(w http.ResponseWriter, r *http.Request) bool
+}
+
+// runMockServer 构造 run 系列共用的 mock 骨架：建会话、prompt_async、abort、
+// 取消息、SSE 推帧、default 404。变体路由与 abort 副作用经 cfg 注入。
+func runMockServer(t *testing.T, cfg runServerConfig) *httptest.Server {
 	t.Helper()
-	interrupted := false
 	promptCh := make(chan struct{}, 8) // 等 prompt 到达后再发 frames，模拟真实服务端时序
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/session" && r.Method == "POST":
-			_, _ = w.Write([]byte(`{"id":"` + sessionID + `","projectID":"global","agent":"build","model":{"id":"m","providerID":"p"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1},"title":"t","directory":"/tmp"}`))
+			_, _ = w.Write([]byte(`{"id":"` + cfg.sessionID + `","projectID":"global","agent":"build","model":{"id":"m","providerID":"p"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1},"title":"t","directory":"/tmp"}`))
 		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/prompt_async"):
 			w.WriteHeader(204)
 			promptCh <- struct{}{}
 		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/abort"):
-			interrupted = true
+			if cfg.onAbort != nil {
+				cfg.onAbort()
+			}
 			w.WriteHeader(200)
 		case strings.HasPrefix(r.URL.Path, "/session/") && strings.Contains(r.URL.Path, "/message/") && r.Method == "GET":
 			// 落库文本与 frames_textOnly 的 delta 一致（"OK"）
-			_, _ = w.Write([]byte(`{"info":{"id":"` + assistantMsgID + `","sessionID":"` + sessionID + `","role":"assistant"},"parts":[{"type":"text","text":"OK"}]}`))
+			_, _ = w.Write([]byte(`{"info":{"id":"` + assistantMsgID + `","sessionID":"` + cfg.sessionID + `","role":"assistant"},"parts":[{"type":"text","text":"OK"}]}`))
+		case cfg.extra != nil && cfg.extra(w, r):
+			// 变体路由已处理
 		case r.URL.Path == "/event":
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(200)
@@ -44,15 +54,28 @@ func setupRunServer(t *testing.T, sessionID string, framesFunc func(sid string) 
 			case <-r.Context().Done():
 				return
 			}
-			// 给 Run 主循环时间执行 Subscribe
-			time.Sleep(50 * time.Millisecond)
-			_, _ = w.Write([]byte(framesFunc(sessionID)))
+			time.Sleep(cfg.eventDelay)
+			_, _ = w.Write([]byte(cfg.frames(cfg.sessionID)))
 			fl.Flush()
 			<-r.Context().Done()
 		default:
 			w.WriteHeader(404)
 		}
 	}))
+	return srv
+}
+
+// setupRunServer 构造一个 mock 服务并在 abort 时记录 interrupted 标志。
+// framesFunc(sessionID) 返回要推送的字节流。
+func setupRunServer(t *testing.T, sessionID string, framesFunc func(sid string) string) (*httptest.Server, *bool) {
+	t.Helper()
+	interrupted := false
+	srv := runMockServer(t, runServerConfig{
+		sessionID:  sessionID,
+		frames:     framesFunc,
+		eventDelay: 50 * time.Millisecond,
+		onAbort:    func() { interrupted = true },
+	})
 	return srv, &interrupted
 }
 
