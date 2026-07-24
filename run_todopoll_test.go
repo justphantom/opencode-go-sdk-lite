@@ -335,3 +335,101 @@ func newTodoFailServer(t *testing.T, sessionID, frames string, todoStatus int) *
 		},
 	})
 }
+
+// TestRun_ResumeSession_StaleTodoSuppressed：复用既有 session（RunOptions.SessionID 非空），
+// 服务端 /todo 返回上一轮残留的非空 todo。pump 首轮立即轮询必须按 baselineOnly 吞掉
+// （登记基线不投递），全程不得把残留 todo 投递为 HighEventTodoUpdated——Todo 无 ID/时间戳，
+// 复用场景下首轮非空默认是历史而非本 turn 新建。
+func TestRun_ResumeSession_StaleTodoSuppressed(t *testing.T) {
+	sid := "ses_t_resume"
+	stale := todoList(Todo{Content: "上轮残留", Status: "completed", Priority: "low"})
+	frames := sseStepEnded(sid, assistantMsgID, 1) // 仅终止，无 SSE todo
+	srv := askedPollServer(t, sid, frames,
+		func() []PermissionRequest { return nil },
+		func() []QuestionRequest { return nil },
+		func() []Todo { return stale }, // 轮询始终返回残留
+	)
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
+	defer func() { _ = stream.Close() }()
+
+	// 复用 session：SessionID 非空 → Run 跳过 CreateSession
+	out, err := c.Run(ctx, stream, RunOptions{SessionID: sid, Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var todoCount int
+	var sawResult bool
+	for ev := range out {
+		if ev.Kind() == HighEventTodoUpdated {
+			todoCount++
+		}
+		if ev.Kind() == HighEventResult {
+			sawResult = true
+		}
+	}
+	if todoCount != 0 {
+		t.Errorf("todo count = %d, want 0（复用 session 首轮残留 todo 必须吞基线不投递）", todoCount)
+	}
+	if !sawResult {
+		t.Error("expected HighEventResult（pump 正常终止）")
+	}
+}
+
+// TestRun_ResumeSession_NewTodoFromSSEDelivered：复用 session，首轮 poll 吞掉残留基线后，
+// 本 turn 经 SSE 推送的 todo.updated（与残留不同）必须正常投递——证明 baselineOnly 只吞首轮
+// 残留，不误伤本 turn 新 todo。
+func TestRun_ResumeSession_NewTodoFromSSEDelivered(t *testing.T) {
+	sid := "ses_t_resume2"
+	stale := todoList(Todo{Content: "上轮残留", Status: "completed", Priority: "low"})
+	fresh := todoList(Todo{Content: "本轮新建", Status: "in_progress", Priority: "high"})
+	frames := sseStepStarted(sid, assistantMsgID, 1) + sseTodoUpdated(sid, 2, fresh)
+	srv := askedPollServer(t, sid, frames,
+		func() []PermissionRequest { return nil },
+		func() []QuestionRequest { return nil },
+		func() []Todo { return stale }, // poll 始终返回残留
+	)
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{SessionID: sid, Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var todoCount int
+	var first Todo
+	timeout := time.After(350 * time.Millisecond)
+loop:
+	for {
+		select {
+		case ev, ok := <-out:
+			if !ok {
+				break loop
+			}
+			if ev.Kind() == HighEventTodoUpdated {
+				todoCount++
+				if d := ev.TodoUpdated(); d != nil && len(d.Todos) > 0 {
+					first = d.Todos[0]
+				}
+			}
+		case <-timeout:
+			break loop
+		}
+	}
+	cancel()
+	if todoCount != 1 {
+		t.Errorf("todo count = %d, want 1（残留吞基线，SSE 新 todo 投递）", todoCount)
+	}
+	if first.Content != "本轮新建" {
+		t.Errorf("todo content = %q, want 本轮新建（应取 SSE 推送的新 todo）", first.Content)
+	}
+}

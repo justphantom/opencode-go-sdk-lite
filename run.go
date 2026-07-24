@@ -44,6 +44,7 @@ func (c *Client) Run(ctx context.Context, stream *GlobalEventStream, opts RunOpt
 	}
 
 	sessionID := opts.SessionID
+	resumed := sessionID != "" // 复用 session：pump 首轮 todo 轮询需吞掉上轮残留基线
 	if sessionID == "" {
 		req := &CreateSessionReq{Agent: opts.Agent, Model: opts.Model}
 		if opts.Location != nil {
@@ -74,14 +75,15 @@ func (c *Client) Run(ctx context.Context, stream *GlobalEventStream, opts RunOpt
 	}
 
 	out := make(chan HighEvent, 16)
-	go c.pump(ctx, stream, sessionID, ack.MessageID, ch, out)
+	go c.pump(ctx, stream, sessionID, ack.MessageID, ch, out, resumed)
 	return out, nil
 }
 
 // pump 把原始 Event 流转换为 HighEvent 流。
 // userMessageID 用于首事件 HighEventPrompt；assistantID 跟随最新 step 的
 // assistantMessageID（多轮 agent-loop 每轮换 messageID，见 followAssistantID）。
-func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID, userMessageID string, src <-chan Event, out chan<- HighEvent) {
+// resumed 标识是否复用既有 session（true 时首轮 todo 轮询吞掉上轮残留基线）。
+func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID, userMessageID string, src <-chan Event, out chan<- HighEvent, resumed bool) {
 	defer close(out)
 	defer stream.Unsubscribe(sessionID)
 	defer recoverPanic("Client.pump")
@@ -110,9 +112,11 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 	// 按 json 签名去重（Todo 无 ID）。poll() 统一两路补偿，三触发点共用。
 	seenAsked := make(map[string]bool)
 	var lastTodo string
+	todoFirstPoll := true // 本 turn 首次 todo 轮询：复用 session 时吞掉上轮残留基线
 	poll := func() {
 		c.pollAsked(ctx, sessionID, seenAsked, out)
-		c.pollTodo(ctx, sessionID, &lastTodo, out)
+		c.pollTodo(ctx, sessionID, &lastTodo, out, resumed && todoFirstPoll)
+		todoFirstPoll = false
 	}
 	pollTicker := time.NewTicker(pollAskedInterval)
 	defer pollTicker.Stop()

@@ -18,7 +18,11 @@ func (c *Client) ListTodos(ctx context.Context, sessionID string) ([]Todo, error
 // pollTodo 补偿轮询 GET /session/{id}/todo，按快照签名去重：仅在 todos 实际变化时投递。
 // 首次接触且为空时静默（turn 开始无 todo 不算事件，避免噪声），但登记签名使后续可比对。
 // 轮询失败（网络/4xx）吞掉，不终止 pump——补偿路径自身不可成为 turn 失败的原因。
-func (c *Client) pollTodo(ctx context.Context, sessionID string, lastSig *string, out chan<- HighEvent) {
+//
+// baselineOnly=true 时仅登记签名后吞掉，不投递：复用 session 的 turn 首轮专用。
+// 服务端持久化的 todo 是上一轮残留（Todo 无 ID/时间戳，无法逐项区分新旧），
+// 当作基线吞掉；本 turn 内 todo 若有变化，靠 SSE 或后续 ticker 轮询按签名差异补投。
+func (c *Client) pollTodo(ctx context.Context, sessionID string, lastSig *string, out chan<- HighEvent, baselineOnly bool) {
 	todos, err := c.ListTodos(ctx, sessionID)
 	if err != nil {
 		return
@@ -26,6 +30,10 @@ func (c *Client) pollTodo(ctx context.Context, sessionID string, lastSig *string
 	b, _ := json.Marshal(todos)
 	sig := string(b)
 	if sig == *lastSig {
+		return
+	}
+	if baselineOnly {
+		*lastSig = sig // 复用 session 首轮：登记残留为基线，不投递
 		return
 	}
 	if len(todos) == 0 && *lastSig == "" {
