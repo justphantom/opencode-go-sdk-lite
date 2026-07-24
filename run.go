@@ -20,6 +20,13 @@ const (
 	runAbortTimeout = 5 * time.Second
 )
 
+// pollAskedInterval / pollAskedToolDelay 控制 asked 补偿轮询。
+// 用 var 便于测试 shrink（对齐 heartbeatTimeout 模式）。
+var (
+	pollAskedInterval  = 60 * time.Second
+	pollAskedToolDelay = 3 * time.Second
+)
+
 // Run 执行一轮对话：建/复用 session → 订阅全局流 → 发 prompt_async →
 // 按 assistantMessageID 过滤 → 合成终止事件 → close chan。
 //
@@ -92,12 +99,32 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 	var accText strings.Builder
 	parts := partTracker{}
 
+	// asked 补偿轮询：全局 /event 无续传，断连窗口会丢 permission.asked/
+	// question.asked，turn 随即永久悬挂。靠 REST pending 列表兜底——asked 在
+	// 服务端一直挂起直到 reply/reject，SSE 丢了也能捞回。三触发：
+	//   - 首次立即：覆盖订阅前已发出的极端窗口
+	//   - 每 pollAskedInterval：被动兜底
+	//   - 工具相关事件后 pollAskedToolDelay：asked 紧随工具调用，缩短补偿延迟
+	// seenAsked 按 requestID 去重，SSE 与轮询任一先到即登记。
+	seenAsked := make(map[string]bool)
+	pollTicker := time.NewTicker(pollAskedInterval)
+	defer pollTicker.Stop()
+	compensateTimer := time.NewTimer(pollAskedToolDelay)
+	compensateTimer.Stop() // 默认 disarm，由 tool 事件 armTimer 触发
+	defer compensateTimer.Stop()
+	// 首次立即轮询一次
+	c.pollAsked(ctx, sessionID, seenAsked, out)
+
 	for {
 		select {
 		case <-ctx.Done():
 			c.fireAndForgetAbort(sessionID)
 			out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true}
 			return
+		case <-pollTicker.C:
+			c.pollAsked(ctx, sessionID, seenAsked, out)
+		case <-compensateTimer.C:
+			c.pollAsked(ctx, sessionID, seenAsked, out)
 		case ev, ok := <-src:
 			if !ok {
 				// 流被关闭（stream.Close 或 Unsubscribe 由别处触发）；兜底终止。
@@ -112,6 +139,15 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			// messageID 过滤：丢弃不属于本 turn 的 part 事件
 			if he.MessageID() != "" && assistantID != "" && he.MessageID() != assistantID {
 				continue
+			}
+			// asked 去重：SSE 与轮询任一先到即登记，后到丢弃，避免重复投递
+			if !registerAsked(&he, seenAsked) {
+				continue
+			}
+			// 工具相关事件后触发补偿轮询（asked 紧随工具调用，主动缩短补偿延迟）
+			if he.Kind() == HighEventToolUse ||
+				(he.Kind() == HighEventStepFinish && he.Result() == "tool-calls") {
+				armTimer(compensateTimer, pollAskedToolDelay)
 			}
 
 			// 累积 assistant 输出文本，供终止事件回填 result。
@@ -160,4 +196,69 @@ func (c *Client) fireAndForgetAbort(sessionID string) {
 	abCtx, cancel := context.WithTimeout(context.Background(), runAbortTimeout)
 	defer cancel()
 	_ = c.Interrupt(abCtx, sessionID)
+}
+
+// pollAsked 补偿轮询服务端 pending 列表，捞回 SSE 丢失的 asked 事件。
+// 按 requestID 去重（seen）；轮询失败（网络/4xx）吞掉，不终止 pump——
+// 补偿路径自身不可成为 turn 失败的原因。
+func (c *Client) pollAsked(ctx context.Context, sessionID string, seen map[string]bool, out chan<- HighEvent) {
+	emit := func(id string, he HighEvent) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		select {
+		case <-ctx.Done():
+		case out <- he:
+		}
+	}
+	if perms, err := c.ListPermissions(ctx, sessionID); err == nil {
+		for _, p := range perms {
+			d := PermissionAskedData{
+				ID: p.ID, SessionID: p.SessionID, Permission: p.Permission,
+				Patterns: p.Patterns, Metadata: p.Metadata, Always: p.Always, Tool: p.Tool,
+			}
+			emit(p.ID, HighEvent{kind: HighEventPermissionAsked, sessionID: p.SessionID, permission: &d})
+		}
+	}
+	if qs, err := c.ListQuestions(ctx, sessionID); err == nil {
+		for _, q := range qs {
+			d := QuestionAskedData{
+				ID: q.ID, SessionID: q.SessionID, Questions: q.Questions, Tool: q.Tool,
+			}
+			emit(q.ID, HighEvent{kind: HighEventQuestionAsked, sessionID: q.SessionID, question: &d})
+		}
+	}
+}
+
+// registerAsked 登记并去重 SSE 来源的 asked 事件。返回 false 表示已见过应丢弃。
+func registerAsked(he *HighEvent, seen map[string]bool) bool {
+	switch he.kind {
+	case HighEventPermissionAsked:
+		if he.permission != nil {
+			if seen[he.permission.ID] {
+				return false
+			}
+			seen[he.permission.ID] = true
+		}
+	case HighEventQuestionAsked:
+		if he.question != nil {
+			if seen[he.question.ID] {
+				return false
+			}
+			seen[he.question.ID] = true
+		}
+	}
+	return true
+}
+
+// armTimer 安全重置 timer：先 Stop 并排空已触发的值，再 Reset，规避 time.Reset 的重入风险。
+func armTimer(t *time.Timer, d time.Duration) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(d)
 }
