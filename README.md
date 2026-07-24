@@ -246,7 +246,7 @@ for ev := range ch {
 
 `Run` 把「创建/复用 session → 订阅全局流 → 发 prompt_async → 按 assistantMessageID 过滤 → 合成终止事件」打包，
 过滤用的 assistantMessageID 在多轮（agent-loop）下跟随最新 step 的 messageID（每轮换 ID，不跟随会丢后续轮次事件）。
-把原始事件归纳为 11 种 `HighEventKind`，channel close 前必有终止事件（result/error）。
+把原始事件归纳为 12 种 `HighEventKind`，channel close 前必有终止事件（result/error）。
 首事件必为 `HighEventPrompt`（携带 SDK 生成的 user messageID 与 sessionID）。
 
 ```go
@@ -277,6 +277,8 @@ for ev := range out {
 		// agent 请求权限：ev.PermissionAsked() → ReplyPermission 应答（见下文）
 	case oc.HighEventQuestionAsked:
 		// agent 向用户提问：ev.QuestionAsked() → ReplyQuestion/RejectQuestion 应答
+	case oc.HighEventTodoUpdated:
+		// 会话级 todo 全量列表：ev.TodoUpdated().Todos（非终止，turn 继续）
 	case oc.HighEventResult:
 		fmt.Printf("\n[done] in=%d out=%d cost=%.4f\n",
 			ev.InputTokens(), ev.OutputTokens(), ev.Cost())
@@ -320,6 +322,6 @@ agent 运行中请求权限（bash 等）或向用户提问时，`Run` 透出 `H
 
 - 零第三方依赖，仅标准库
 - 原始事件：`Type` 常量 + `Properties json.RawMessage`（不做 88 事件强类型 union，仅高频事件附 `*Data` struct）
-- 高层事件：`HighEventKind` 11 种 + Getter（封装在 `Run`）
+- 高层事件：`HighEventKind` 12 种 + Getter（封装在 `Run`）
 - 全局流不支持续传，断连窗口事件丢失
 - 其他未覆盖接口见「接口清单 → 非目标」

@@ -55,3 +55,18 @@ func WithTokens(in, out, cacheRead, cacheWrite int) HighEventOpt {
 func WithCost(c float64) HighEventOpt {
 	return func(e *HighEvent) { e.cost = c }
 }
+
+// WithTodoUpdated 设置 todo.updated payload（仅 HighEventTodoUpdated 用）。
+func WithTodoUpdated(d *TodoUpdatedData) HighEventOpt {
+	return func(e *HighEvent) { e.todo = d }
+}
+
+// WithPermissionAsked 设置 permission.asked payload（仅 HighEventPermissionAsked 用）。
+func WithPermissionAsked(d *PermissionAskedData) HighEventOpt {
+	return func(e *HighEvent) { e.permission = d }
+}
+
+// WithQuestionAsked 设置 question.asked payload（仅 HighEventQuestionAsked 用）。
+func WithQuestionAsked(d *QuestionAskedData) HighEventOpt {
+	return func(e *HighEvent) { e.question = d }
+}

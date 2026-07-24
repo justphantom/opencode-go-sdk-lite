@@ -106,14 +106,20 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 	//   - 每 pollAskedInterval：被动兜底
 	//   - 工具相关事件后 pollAskedToolDelay：asked 紧随工具调用，缩短补偿延迟
 	// seenAsked 按 requestID 去重，SSE 与轮询任一先到即登记。
+	// todo 同窗口也会丢（todo.updated），用 GET /session/{id}/todo 的全量快照补偿，
+	// 按 json 签名去重（Todo 无 ID）。poll() 统一两路补偿，三触发点共用。
 	seenAsked := make(map[string]bool)
+	var lastTodo string
+	poll := func() {
+		c.pollAsked(ctx, sessionID, seenAsked, out)
+		c.pollTodo(ctx, sessionID, &lastTodo, out)
+	}
 	pollTicker := time.NewTicker(pollAskedInterval)
 	defer pollTicker.Stop()
 	compensateTimer := time.NewTimer(pollAskedToolDelay)
 	compensateTimer.Stop() // 默认 disarm，由 tool 事件 armTimer 触发
 	defer compensateTimer.Stop()
-	// 首次立即轮询一次
-	c.pollAsked(ctx, sessionID, seenAsked, out)
+	poll() // 首次立即（asked + todo）
 
 	for {
 		select {
@@ -122,9 +128,9 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true}
 			return
 		case <-pollTicker.C:
-			c.pollAsked(ctx, sessionID, seenAsked, out)
+			poll()
 		case <-compensateTimer.C:
-			c.pollAsked(ctx, sessionID, seenAsked, out)
+			poll()
 		case ev, ok := <-src:
 			if !ok {
 				// 流被关闭（stream.Close 或 Unsubscribe 由别处触发）；兜底终止。
@@ -142,6 +148,10 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			}
 			// asked 去重：SSE 与轮询任一先到即登记，后到丢弃，避免重复投递
 			if !registerAsked(&he, seenAsked) {
+				continue
+			}
+			// todo 去重：按全量快照 json 签名，SSE 与轮询任一先到即登记，后到丢弃
+			if !registerTodo(&he, &lastTodo) {
 				continue
 			}
 			// 工具相关事件后触发补偿轮询（asked 紧随工具调用，主动缩短补偿延迟）

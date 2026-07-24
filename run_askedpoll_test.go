@@ -23,11 +23,12 @@ func shrinkPoll(interval, toolDelay time.Duration) func() {
 	}
 }
 
-// askedPollServer 构造支持 asked 补偿轮询的 mock 服务。
-// permPending/qPending 动态控制每次 GET /permission、/question 的返回；
+// askedPollServer 构造支持 asked + todo 补偿轮询的 mock 服务。
+// permPending/qPending/todoPending 动态控制每次 GET /permission、/question、/session/{id}/todo 的返回；
 // frames 为 /event 推送一次后保持连接的事件流。
 func askedPollServer(t *testing.T, sessionID, frames string,
 	permPending func() []PermissionRequest, qPending func() []QuestionRequest,
+	todoPending func() []Todo,
 ) *httptest.Server {
 	t.Helper()
 	promptCh := make(chan struct{}, 4)
@@ -46,6 +47,8 @@ func askedPollServer(t *testing.T, sessionID, frames string,
 			writeJSON(w, permPending())
 		case r.URL.Path == "/question" && r.Method == "GET":
 			writeJSON(w, qPending())
+		case strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/todo") && r.Method == "GET":
+			writeJSON(w, todoPending())
 		case r.URL.Path == "/event":
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(200)
@@ -99,7 +102,7 @@ func TestRun_AskedRecoveredByImmediatePoll(t *testing.T) {
 	}
 	// SSE 只发终止（step-finish stop），不发 asked
 	frames := sseStepEnded(sid, assistantMsgID, 1)
-	srv := askedPollServer(t, sid, frames, permPending, qPending)
+	srv := askedPollServer(t, sid, frames, permPending, qPending, func() []Todo { return nil })
 	defer srv.Close()
 
 	c, _ := New(srv.URL)
@@ -153,7 +156,7 @@ func TestRun_AskedRecoveredByCompensateAfterTool(t *testing.T) {
 	}
 	// step-start + tool_use；不发 asked、不发 result，turn 保持悬挂等待补偿
 	frames := sseStepStarted(sid, assistantMsgID, 1) + sseToolRunning(sid, assistantMsgID, 2)
-	srv := askedPollServer(t, sid, frames, permPending, func() []QuestionRequest { return nil })
+	srv := askedPollServer(t, sid, frames, permPending, func() []QuestionRequest { return nil }, func() []Todo { return nil })
 	defer srv.Close()
 
 	c, _ := New(srv.URL)
@@ -210,7 +213,7 @@ func TestRun_AskedDedupNoDuplicate(t *testing.T) {
 	}
 	// step-start + permission.asked；不发 result，让 pump 存活承接多次 ticker 轮询
 	frames := sseStepStarted(sid, assistantMsgID, 1) + ssePermissionAsked(sid, assistantMsgID, 2)
-	srv := askedPollServer(t, sid, frames, permPending, func() []QuestionRequest { return nil })
+	srv := askedPollServer(t, sid, frames, permPending, func() []QuestionRequest { return nil }, func() []Todo { return nil })
 	defer srv.Close()
 
 	c, _ := New(srv.URL)

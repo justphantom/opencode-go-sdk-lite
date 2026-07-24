@@ -247,6 +247,63 @@ func TestMapToHighEvent_QuestionAsked(t *testing.T) {
 	}
 }
 
+// TestMapToHighEvent_TodoUpdated：todo.updated 映射为非终止事件，
+// payload 为全量列表；空 todos / 缺 todos 字段均正常上抛（不得丢事件）。
+func TestMapToHighEvent_TodoUpdated(t *testing.T) {
+	var assistantID string
+	parts := partTracker{}
+
+	// 正常全量列表（2 项，多种 status/priority）
+	props := `{"sessionID":"ses_1","todos":[` +
+		`{"content":"写测试","status":"in_progress","priority":"high"},` +
+		`{"content":"提交","status":"pending","priority":"low"}]}`
+	he, emit, term := mapToHighEvent(Event{Type: EventTodoUpdated, Properties: jsonRaw(props)}, &assistantID, parts)
+	if !emit || term || he.Kind() != HighEventTodoUpdated || he.SessionID() != "ses_1" {
+		t.Fatalf("todo.updated: %+v emit=%v term=%v", he, emit, term)
+	}
+	// messageID 必须为空：session 级事件，空值才能绕过 pump 的 assistantID 过滤
+	if he.MessageID() != "" {
+		t.Errorf("MessageID() = %q, want empty", he.MessageID())
+	}
+	d := he.TodoUpdated()
+	if d == nil {
+		t.Fatal("TodoUpdated() is nil")
+	}
+	if len(d.Todos) != 2 {
+		t.Fatalf("payload todos len = %d, want 2", len(d.Todos))
+	}
+	if d.Todos[0].Content != "写测试" || d.Todos[0].Status != "in_progress" || d.Todos[0].Priority != "high" {
+		t.Errorf("todos[0] = %+v", d.Todos[0])
+	}
+	if d.Todos[1].Status != "pending" || d.Todos[1].Priority != "low" {
+		t.Errorf("todos[1] = %+v", d.Todos[1])
+	}
+	// getter 隔离：todo kind 下 asked getter 必须为 nil
+	if he.PermissionAsked() != nil || he.QuestionAsked() != nil {
+		t.Error("asked getters must be nil for todo kind")
+	}
+
+	// 空 todos：不得 return false（语义=清空）
+	he, emit, term = mapToHighEvent(Event{Type: EventTodoUpdated, Properties: jsonRaw(`{"sessionID":"ses_1","todos":[]}`)}, &assistantID, parts)
+	if !emit || term || he.Kind() != HighEventTodoUpdated {
+		t.Errorf("empty todos: %+v emit=%v term=%v", he, emit, term)
+	}
+	if d := he.TodoUpdated(); d == nil || len(d.Todos) != 0 {
+		t.Errorf("empty todos payload = %+v", d)
+	}
+
+	// 缺 todos 字段：映射成功，Todos 为 nil/0
+	he, emit, _ = mapToHighEvent(Event{Type: EventTodoUpdated, Properties: jsonRaw(`{"sessionID":"ses_1"}`)}, &assistantID, parts)
+	if !emit || he.TodoUpdated() == nil || len(he.TodoUpdated().Todos) != 0 {
+		t.Errorf("missing todos field: %+v emit=%v", he, emit)
+	}
+
+	// 坏 JSON：丢事件
+	if _, emit, _ := mapToHighEvent(Event{Type: EventTodoUpdated, Properties: jsonRaw(`{bad`)}, &assistantID, parts); emit {
+		t.Error("bad json should drop event")
+	}
+}
+
 // TestFollowAssistantID：无条件跟随新 messageID；空 id 与 nil 指针不动。
 func TestFollowAssistantID(t *testing.T) {
 	id := "msg_a"

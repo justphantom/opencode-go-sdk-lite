@@ -2,7 +2,7 @@ package opencode
 
 import "encoding/json"
 
-// HighEventKind 是高层事件的语义类别（11 种）。
+// HighEventKind 是高层事件的语义类别（12 种）。
 // 不同于原始 Event（V1 经典事件体系），HighEvent 把过程流归纳为少数可消费类别。
 type HighEventKind string
 
@@ -20,6 +20,8 @@ const (
 	// asked 两个事件均为非终止：agent 挂起等用户应答，应答后 turn 继续。
 	HighEventPermissionAsked HighEventKind = "permission_asked"
 	HighEventQuestionAsked   HighEventKind = "question_asked"
+
+	HighEventTodoUpdated HighEventKind = "todo_updated" // 会话级 todo 全量列表更新
 )
 
 // HighEvent 是 Run 对外暴露的高层事件。字段非导出，用 Getter 访问，
@@ -42,6 +44,7 @@ type HighEvent struct {
 	cost         float64
 	permission   *PermissionAskedData
 	question     *QuestionAskedData
+	todo         *TodoUpdatedData // 仅 kind==HighEventTodoUpdated 非 nil
 }
 
 // Getter
@@ -66,6 +69,9 @@ func (e HighEvent) PermissionAsked() *PermissionAskedData { return e.permission 
 
 // QuestionAsked 仅 kind==HighEventQuestionAsked 时非 nil，其余 kind 返回 nil。
 func (e HighEvent) QuestionAsked() *QuestionAskedData { return e.question }
+
+// TodoUpdated 仅 kind==HighEventTodoUpdated 时非 nil，其余 kind 返回 nil。
+func (e HighEvent) TodoUpdated() *TodoUpdatedData { return e.todo }
 
 // partTracker 记录 partID → part.type，供 message.part.delta 路由
 // （delta 事件本身不带 part 类型，实测其 field 恒为 "text"）。
@@ -201,6 +207,15 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 			return HighEvent{}, false, false
 		}
 		return HighEvent{kind: HighEventQuestionAsked, sessionID: d.SessionID, question: &d}, true, false
+
+	case EventTodoUpdated:
+		var d TodoUpdatedData
+		if err := json.Unmarshal(ev.Properties, &d); err != nil {
+			return HighEvent{}, false, false
+		}
+		// messageID 留空（session 级）；非终止（agent 写 todo 后 turn 继续）；
+		// 空 Todos 正常上抛（语义=清空）。
+		return HighEvent{kind: HighEventTodoUpdated, sessionID: d.SessionID, todo: &d}, true, false
 	}
 	return HighEvent{}, false, false
 }
