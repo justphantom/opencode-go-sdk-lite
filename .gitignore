@@ -41,3 +41,11 @@ go.work.sum
 /testdata/*
 !/testdata/sse_frames.txt
 !/testdata/sse_frames_reasoning.txt
+
+# Example binaries (go build 产物)
+/basic
+/examples/*/basic
+/examples/*/observability
+/examples/*/auto-reply
+/examples/*/concurrent
+/examples/*/session-crud

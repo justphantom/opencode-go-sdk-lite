@@ -27,6 +27,9 @@ go get github.com/justphantom/opencode-go-sdk-lite
 | `WithHTTPClient(c)` | 注入自定义 `*http.Client` |
 | `WithHeader(k, v)` | 追加/覆盖单个请求头 |
 | `WithUserAgent(ua)` | 设置 `User-Agent` |
+| `WithLogger(l)` *(v0.2)* | 注入 `*slog.Logger`，覆盖 connect/dispatch/watchdog 等埋点（默认 discard） |
+| `WithBusinessIdleTimeout(d)` *(v0.2)* | 业务事件空闲阈值，超过触发 `OnIdle`（默认 5min） |
+| `WithDrainGrace(d)` *(v0.2)* | pump ctx 取消后等飞行中终止事件的宽限（默认 500ms，负值禁用） |
 
 ### Session 管理 — `session.go`
 
@@ -261,30 +264,35 @@ out, err := client.Run(ctx, stream, oc.RunOptions{
 })
 if err != nil { return err }
 
-for ev := range out {
-	switch ev.Kind() {
-	case oc.HighEventPrompt:
-		fmt.Println("session:", ev.SessionID(), "user msg:", ev.MessageID())
-	case oc.HighEventText:
-		fmt.Print(ev.Text())
-	case oc.HighEventThinking:
-		// 推理增量（如模型支持）
-	case oc.HighEventToolUse:
-		fmt.Printf("\n[tool: %s] %s\n", ev.ToolName(), ev.ToolInput())
-	case oc.HighEventToolResult:
-		if ev.IsToolError() { fmt.Println("  (failed)") }
-	case oc.HighEventPermissionAsked:
-		// agent 请求权限：ev.PermissionAsked() → ReplyPermission 应答（见下文）
-	case oc.HighEventQuestionAsked:
-		// agent 向用户提问：ev.QuestionAsked() → ReplyQuestion/RejectQuestion 应答
-	case oc.HighEventTodoUpdated:
-		// 会话级 todo 全量列表：ev.TodoUpdated().Todos（非终止，turn 继续）
-	case oc.HighEventResult:
-		fmt.Printf("\n[done] in=%d out=%d cost=%.4f\n",
-			ev.InputTokens(), ev.OutputTokens(), ev.Cost())
-		return
-	case oc.HighEventError:
-		return // 出错终止
+	for ev := range out {
+		switch ev.Kind() {
+		case oc.HighEventPrompt:
+			fmt.Println("session:", ev.SessionID(), "user msg:", ev.MessageID())
+		case oc.HighEventText:
+			fmt.Print(ev.Text())
+		case oc.HighEventThinking:
+			// 推理增量（v0.2.1）：实时累积到本地 strings.Builder
+		case oc.HighEventThinkingDone:
+			// v0.2.1：思考 part 终止帧，服务端整合的权威全文，可覆盖累积值
+		case oc.HighEventToolUse:
+			fmt.Printf("\n[tool: %s] %s\n", ev.ToolName(), ev.ToolInput())
+		case oc.HighEventToolResult:
+			if ev.IsToolError() { fmt.Println("  (failed)") }
+		case oc.HighEventPermissionAsked:
+			// agent 请求权限：ev.PermissionAsked() → ReplyPermission 应答（见下文）
+		case oc.HighEventQuestionAsked:
+			// agent 向用户提问：ev.QuestionAsked() → ReplyQuestion/RejectQuestion 应答
+		case oc.HighEventTodoUpdated:
+			// 会话级 todo 全量列表：ev.TodoUpdated().Todos（非终止，turn 继续）
+		case oc.HighEventResult:
+			// v0.3.0 完整 turn 报告：见下「完整 turn 报告」
+			fmt.Printf("\n[done] in=%d out=%d reasoning=%d cost=%.4f model=%s\n",
+				ev.InputTokens(), ev.OutputTokens(), ev.ReasoningTokens(),
+				ev.Cost(), ev.ModelID())
+			return
+		case oc.HighEventError:
+			return // 出错终止
+		}
 	}
 }
 ```
@@ -292,6 +300,64 @@ for ev := range out {
 完成信号是 step-finish part 且 `reason="stop"`（实测确认；`session.idle` 作兜底终止）。
 `HighEventResult` 的结果文本优先取服务端落库文本（`GetMessage` 的 `FinalText`，免疫 SSE 丢帧）；
 取不到或为空则回退 SSE 累积的 text delta（run.go:120-151）。
+
+### 完整 turn 报告（v0.3.0）
+
+`HighEventResult` 升级为完整 turn 报告，集中所有元数据。新增 Getter：
+
+| Getter | 数据源 | 用途 |
+|---|---|---|
+| `Thinking() string` | 落库 `ReasoningText` 优先，回退 SSE 累积 | turn 完整思考全文（多 step 拼接） |
+| `ReasoningTokens() int` | step-finish.tokens.reasoning | 本次 reasoning token 用量 |
+| `ModelID() string` / `ProviderID() string` | SSE `message.updated` 主，`GetMessage` 兜底 | 本次回复所用 model（message 级） |
+| `SessionTokens() SessionTokens` | `GetSession` | 会话累计 input/output/reasoning/cache |
+| `SessionCost() float64` | `GetSession` | 会话累计 cost |
+
+```go
+case oc.HighEventResult:
+    fmt.Println("回复:", ev.Result())
+    fmt.Println("思考:", ev.Thinking())
+    fmt.Printf("model: %s / %s\n", ev.ModelID(), ev.ProviderID())
+    fmt.Printf("本次: in=%d out=%d reasoning=%d cache={r:%d w:%d} cost=%.4f\n",
+        ev.InputTokens(), ev.OutputTokens(), ev.ReasoningTokens(),
+        ev.CacheRead(), ev.CacheWrite(), ev.Cost())
+    st := ev.SessionTokens()
+    fmt.Printf("会话累计: in=%.0f out=%.0f reasoning=%.0f cost=%.4f\n",
+        st.Input, st.Output, st.Reasoning, ev.SessionCost())
+```
+
+每次 turn 结束额外发 1 次 `GetSession` RPC 拿累计用量；model 双源策略对齐 `finalText`/`finalReasoning`（落库优先，回退 SSE 累积）。
+
+### 可观测性与 ctx 取消兜底（v0.2.0）
+
+**Logger 注入**：`WithLogger(*slog.Logger)` 默认 `discardHandler`（Go 1.22 无 `slog.DiscardHandler`）。覆盖 connect/dispatch/watchdog 等埋点；`recoverPanic` 记 stack；`cancelConn` 带 reason。
+
+```go
+client, _ := oc.New(url,
+    oc.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, nil))),
+)
+```
+
+**双 watchdog**：心跳 watchdog（15s，连接半开）+ 业务事件 watchdog（默认 5min，agent 卡死/服务端不 push）。后者不盲 cancel——触发 `OnIdle` 回调让订阅者决策；`pendingAsked` 状态跳过（等用户应答是主动挂起）。
+
+```go
+stream.OnIdle = func(sid string, idleSince time.Time) {
+    // 决策：GET messages 拉最终回复 / 主动 abort / 继续等
+}
+// 阈值可调：
+client, _ := oc.New(url, oc.WithBusinessIdleTimeout(3*time.Minute))
+```
+
+**ctx 取消不丢终止事件**：pump 在 ctx.Done 时先 `drainSrcOnExit` 救 src 已缓冲事件，再 `waitForTerminalInGrace`（drainGrace 默认 500ms，可经 `WithDrainGrace` 调）等飞行中事件。`RunWithHandle` 暴露 `WaitTerminal` 让订阅者主动多等一段：
+
+```go
+handle, _ := client.RunWithHandle(ctx, stream, opts)
+// ...消费 handle.Events()...
+// ctx 取消时：
+ev, ok := handle.WaitTerminal(ctxWith2sTimeout)  // 接住飞行中的 HighEventResult
+```
+
+旧 `Run` 签名保留（内部委托 `RunWithHandle`，返回 `handle.Events()`）。详见 `examples/observability/`。
 
 ### 权限/提问事件（permission_asked / question_asked）
 
@@ -322,6 +388,15 @@ agent 运行中请求权限（bash 等）或向用户提问时，`Run` 透出 `H
 
 - 零第三方依赖，仅标准库
 - 原始事件：`Type` 常量 + `Properties json.RawMessage`（不做 88 事件强类型 union，仅高频事件附 `*Data` struct）
-- 高层事件：`HighEventKind` 12 种 + Getter（封装在 `Run`）
-- 全局流不支持续传，断连窗口事件丢失
+- 高层事件：`HighEventKind` 13 种 + Getter（封装在 `Run`）
+- 全局流不支持续传，断连窗口事件丢失（v0.2.0 logger + 双 watchdog + drain 已大幅降低静默故障风险）
 - 其他未覆盖接口见「接口清单 → 非目标」
+
+## 版本对照
+
+| 版本 | 关键能力 |
+|---|---|
+| v0.1.x | 基础：对话/SSE/模型/CRUD + HighEvent 12 kind |
+| v0.2.0 | SSE 静默故障根治：`WithLogger` + 双 watchdog + `drainSrcOnExit` + `RunWithHandle.WaitTerminal` |
+| v0.2.1 | reasoning 完整文本：`HighEventThinkingDone` 终止帧 + `HighEventResult.Thinking()` |
+| v0.3.0 | `HighEventResult` 升级为完整 turn 报告：`ReasoningTokens`/`ModelID`/`ProviderID`/`SessionTokens`/`SessionCost` |

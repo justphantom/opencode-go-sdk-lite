@@ -6,7 +6,8 @@
 //	go run ./examples/basic
 //	go run ./examples/basic -url http://127.0.0.1:4096 -token XXX -dir /path/to/repo -prompt "解释这个项目"
 //
-// 预期输出：依次打印模型数、sessionID、文本增量与最终 token 用量。
+// 预期输出：依次打印模型数、sessionID、文本增量、思考增量（-show-thinking 开启）、
+// 最终 turn 报告（v0.3.0：result + thinking + model + 本次 tokens + 会话累计）。
 package main
 
 import (
@@ -15,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	oc "github.com/justphantom/opencode-go-sdk-lite"
@@ -22,16 +24,17 @@ import (
 
 func main() {
 	var (
-		baseURL = flag.String("url", "http://127.0.0.1:6096", "opencode serve 地址")
-		token   = flag.String("token", "", "Bearer token（本地部署可空）")
-		dir     = flag.String("dir", ".", "工作区目录（LocationRef.Directory）")
-		prompt  = flag.String("prompt", "用一句话介绍你自己", "提问内容")
-		modelID = flag.String("model", "", "模型 id（空则用服务端默认）")
-		timeout = flag.Duration("timeout", 90*time.Second, "整体超时")
+		baseURL      = flag.String("url", "http://127.0.0.1:6096", "opencode serve 地址")
+		token        = flag.String("token", "", "Bearer token（本地部署可空）")
+		dir          = flag.String("dir", ".", "工作区目录（LocationRef.Directory）")
+		prompt       = flag.String("prompt", "用一句话介绍你自己", "提问内容")
+		modelID      = flag.String("model", "", "模型 id（空则用服务端默认）")
+		showThinking = flag.Bool("show-thinking", false, "实时打印思考增量（避免刷屏，默认关）")
+		timeout      = flag.Duration("timeout", 90*time.Second, "整体超时")
 	)
 	flag.Parse()
 
-	// 1. 构造 Client。WithHTTPClient 可注入，这里用默认。
+	// 1. 构造 Client。
 	opts := []oc.Option{oc.WithUserAgent("opencode-sdk-lite/examples/basic")}
 	if *token != "" {
 		opts = append(opts, oc.WithToken(*token))
@@ -84,7 +87,10 @@ func main() {
 	}
 
 	// 6. 消费 HighEvent 直到 chan close（Run 保证 close 前必发 result/error）。
-	var sessionID string
+	var (
+		sessionID    string
+		accThinking  strings.Builder // v0.2.1：累积思考增量（也可走 Result.Thinking() 拿权威全文）
+	)
 	for ev := range events {
 		switch ev.Kind() {
 		case oc.HighEventPrompt:
@@ -93,12 +99,20 @@ func main() {
 		case oc.HighEventText:
 			fmt.Print(ev.Text())
 		case oc.HighEventThinking:
-			// 思考增量默认不打，避免刷屏；按需处理
+			// 思考增量：实时累积；UI 场景可流式打印（-show-thinking 开启）。
+			accThinking.WriteString(ev.Text())
+			if *showThinking {
+				fmt.Print(ev.Text())
+			}
+		case oc.HighEventThinkingDone:
+			// v0.2.1：思考 part 终止帧，携带服务端整合的权威全文。
+			// 调用方可据此覆盖累积值（免疫丢帧/乱序）；此处仅累积，最终走 Result.Thinking()。
+			accThinking.Reset()
+			accThinking.WriteString(ev.Text())
 		case oc.HighEventToolUse:
 			fmt.Printf("\n[tool] %s\n", ev.ToolName())
 		case oc.HighEventResult:
-			fmt.Printf("\n[result] finish=%s in=%d out=%d cost=%.4f\n",
-				ev.Result(), ev.InputTokens(), ev.OutputTokens(), ev.Cost())
+			printTurnReport(ev)
 		case oc.HighEventError:
 			fmt.Printf("\n[error] %s\n", ev.Result())
 			os.Exit(1)
@@ -110,6 +124,32 @@ func main() {
 		_ = client.DeleteSession(ctx, sessionID)
 		fmt.Printf("[cleanup] session %s 已删除\n", sessionID)
 	}
+}
+
+// printTurnReport 打印 v0.3.0 完整 turn 报告：回复 + 思考 + model + 本次 tokens + 会话累计。
+func printTurnReport(ev oc.HighEvent) {
+	fmt.Println("\n--- turn report ---")
+	if r := ev.Result(); r != "" {
+		fmt.Printf("回复: %s\n", r)
+	}
+	if t := ev.Thinking(); t != "" {
+		// 思考可能很长，这里只显示前 200 字符 + 长度
+		preview := t
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		fmt.Printf("思考 (%d 字符): %s\n", len(t), preview)
+	}
+	if ev.ModelID() != "" {
+		fmt.Printf("model: %s / %s\n", ev.ModelID(), ev.ProviderID())
+	}
+	fmt.Printf("本次 tokens: input=%d output=%d reasoning=%d cache={read=%d write=%d} cost=%.4f\n",
+		ev.InputTokens(), ev.OutputTokens(), ev.ReasoningTokens(),
+		ev.CacheRead(), ev.CacheWrite(), ev.Cost())
+	st := ev.SessionTokens()
+	fmt.Printf("会话累计: input=%.0f output=%.0f reasoning=%.0f cache={read=%.0f write=%.0f} cost=%.4f\n",
+		st.Input, st.Output, st.Reasoning, st.Cache.Read, st.Cache.Write, ev.SessionCost())
+	fmt.Println("--- end ---")
 }
 
 func absDir(d string) string {

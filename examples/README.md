@@ -6,9 +6,10 @@
 
 | 示例 | 场景 | 关键 API |
 |---|---|---|
-| [`basic/`](./basic) | 最小路径：一轮对话 | `New` → `Health` → `ListModels` → `NewGlobalEventStream` → `Run` |
+| [`basic/`](./basic) | 最小路径：一轮对话 + 完整 turn 报告 | `New` → `Health` → `ListModels` → `NewGlobalEventStream` → `Run` → `HighEventResult`（v0.3.0 完整元数据） |
 | [`auto-reply/`](./auto-reply) | 权限/问题自动应答 | `SessionEvents` + `ReplyPermission` / `ReplyQuestion` |
 | [`concurrent/`](./concurrent) | 多 session 共享一条全局流 | `GlobalEventStream.Subscribe` + `Prompt` |
+| [`observability/`](./observability) | v0.2 可观测性 + ctx 取消兜底（drain） | `WithLogger` + `OnIdle` + `RunWithHandle.WaitTerminal` |
 | [`session-crud/`](./session-crud) | session 管理面全生命周期 | `Create/List/Get/UpdateSession/ListMessages/Delete` |
 
 ## 前置条件
@@ -36,8 +37,11 @@ opencode serve --port 6096   # 或用默认 4096
 
 ```
 go run ./examples/basic
+go run ./examples/basic -show-thinking              # 实时打印思考增量
 go run ./examples/auto-reply -perm always
 go run ./examples/concurrent -n 3
+go run ./examples/observability                     # 默认配置
+go run ./examples/observability -cancel-after 10s   # 演示 ctx 取消 + drain
 go run ./examples/session-crud
 ```
 
@@ -46,6 +50,7 @@ go run ./examples/session-crud
 - 单轮问答 / ChatOps 机器人 → `basic`
 - 无人值守 agent / CI 集成 → `auto-reply`
 - 多租户网关 / 一进多出 → `concurrent`
+- 长链路订阅者（如 bridge）/ SSE 故障定位 / ctx 取消要不丢终止事件 → `observability`
 - 管理面板 / session 列表页 → `session-crud`
 
 ## 注意
