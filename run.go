@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -121,7 +122,8 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 
 	var assistantID string
 	var accText strings.Builder
-	var accThinking strings.Builder // 思考增量累积，HighEventResult.Thinking() 的回填源（对称 accText）
+	var accThinking strings.Builder        // 思考增量累积，HighEventResult.Thinking() 的回填源（对称 accText）
+	var resultModel, resultProvider string // message.updated 帧抓到的 model 信息（HighEventResult.ModelID 主源）
 	parts := partTracker{}
 
 	// askedTracker 跨主 src 与子 session 转发去重 asked（按 requestID 全局唯一）。
@@ -172,10 +174,10 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 	for {
 		select {
 		case <-ctx.Done():
-			if c.drainSrcOnExit(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking) {
+			if c.drainSrcOnExit(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider) {
 				return
 			}
-			if c.waitForTerminalInGrace(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking, c.effectiveDrainGrace()) {
+			if c.waitForTerminalInGrace(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider, c.effectiveDrainGrace()) {
 				return
 			}
 			c.fireAndForgetAbort(sessionID)
@@ -195,6 +197,16 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 				// 文本走 text 字段，与 Error 事件约定一致。
 				out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true, text: "stream closed"}
 				return
+			}
+			// peek message.updated 抓 model 信息（HighEventResult.ModelID 主源）。
+			// 放在 mapToHighEvent 之前：message.updated 不映射为 HighEvent（mapToHighEvent 无此 case），
+			// 但携带本次回复所用 model，pump 缓存供 Result 时用。SSE 未抓到则 finalModel 走 GetMessage 兜底。
+			if ev.Type == EventMessageUpdated {
+				var d MessageUpdatedData
+				if json.Unmarshal(ev.Properties, &d) == nil && d.Info.ModelID != "" {
+					resultModel = d.Info.ModelID
+					resultProvider = d.Info.ProviderID
+				}
 			}
 			he, emit, terminal := mapToHighEvent(ev, &assistantID, parts)
 			if !emit {
@@ -245,13 +257,25 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			if he.Kind() == HighEventResult {
 				he.thinking = c.finalReasoning(ctx, sessionID, assistantID, accThinking.String())
 			}
+			// HighEventResult 回填 model：SSE message.updated 抓到的优先（resultModel），
+			// 空则调 GetMessage 兜底（落库 info.modelID）。双源策略对齐 finalText/finalReasoning。
+			if he.Kind() == HighEventResult {
+				mid, pid := c.finalModel(ctx, sessionID, assistantID, resultModel, resultProvider)
+				he.modelID = mid
+				he.providerID = pid
+			}
+			// HighEventResult 回填会话累计用量：调 GetSession 拿 SessionInfo.Tokens/Cost。
+			// 失败返零值（调用方可自行 GetSession 兜底）。每次 turn 结束 1 次 RPC。
+			if he.Kind() == HighEventResult {
+				he.sessionTokens, he.sessionCost = c.finalSessionUsage(ctx, sessionID)
+			}
 
 			select {
 			case <-ctx.Done():
-				if c.drainSrcOnExit(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking) {
+				if c.drainSrcOnExit(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider) {
 					return
 				}
-				if c.waitForTerminalInGrace(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking, c.effectiveDrainGrace()) {
+				if c.waitForTerminalInGrace(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider, c.effectiveDrainGrace()) {
 					return
 				}
 				c.fireAndForgetAbort(sessionID)
@@ -289,6 +313,33 @@ func (c *Client) finalReasoning(ctx context.Context, sessionID, assistantID, acc
 		}
 	}
 	return accumulated
+}
+
+// finalModel 返回 turn 所用 model 信息：优先 SSE message.updated 抓取的累积值
+// （accModelID），空则调 GetMessage 拿 info.ModelID/ProviderID 兜底。双源策略对齐
+// finalText/finalReasoning。
+func (c *Client) finalModel(ctx context.Context, sessionID, assistantID, accModelID, accProviderID string) (modelID, providerID string) {
+	if accModelID != "" {
+		return accModelID, accProviderID
+	}
+	if assistantID != "" {
+		if m, err := c.GetMessage(ctx, sessionID, assistantID); err == nil {
+			if m.Info.ModelID != "" {
+				return m.Info.ModelID, m.Info.ProviderID
+			}
+		}
+	}
+	return "", ""
+}
+
+// finalSessionUsage 返回会话累计 tokens/cost：调 GetSession 拿 SessionInfo。
+// 失败返零值（调用方可自行 GetSession 兜底）。每次 turn 结束 1 次 RPC。
+func (c *Client) finalSessionUsage(ctx context.Context, sessionID string) (SessionTokens, float64) {
+	s, err := c.GetSession(ctx, sessionID)
+	if err != nil {
+		return SessionTokens{}, 0
+	}
+	return s.Tokens, s.Cost
 }
 
 // fireAndForgetAbort ctx 取消时尽力通知服务端中断，超时即放弃。

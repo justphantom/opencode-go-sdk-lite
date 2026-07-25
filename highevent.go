@@ -32,25 +32,30 @@ const (
 // HighEvent 是 Run 对外暴露的高层事件。字段非导出，用 Getter 访问，
 // 对齐 lark-bridge 接入约定（bridge 零转换接入）。
 type HighEvent struct {
-	kind         HighEventKind
-	sessionID    string
-	messageID    string // assistantMessageID；HighEventPrompt 里是 user messageID
-	text         string
-	toolName     string
-	toolKind     ToolKind
-	toolInput    string
-	isToolError  bool
-	result       string
-	isError      bool
-	inputTokens  int
-	outputTokens int
-	cacheRead    int
-	cacheWrite   int
-	cost         float64
-	permission   *PermissionAskedData
-	question     *QuestionAskedData
-	todo         *TodoUpdatedData // 仅 kind==HighEventTodoUpdated 非 nil
-	thinking     string           // 仅 HighEventResult 携带：turn 完整思考全文（多 step 拼接，落库优先）
+	kind            HighEventKind
+	sessionID       string
+	messageID       string // assistantMessageID；HighEventPrompt 里是 user messageID
+	text            string
+	toolName        string
+	toolKind        ToolKind
+	toolInput       string
+	isToolError     bool
+	result          string
+	isError         bool
+	inputTokens     int
+	outputTokens    int
+	cacheRead       int
+	cacheWrite      int
+	cost            float64
+	permission      *PermissionAskedData
+	question        *QuestionAskedData
+	todo            *TodoUpdatedData // 仅 kind==HighEventTodoUpdated 非 nil
+	thinking        string           // 仅 HighEventResult 携带：turn 完整思考全文（多 step 拼接，落库优先）
+	reasoningTokens int              // 仅 HighEventResult：本次 reasoning token 用量
+	modelID         string           // 仅 HighEventResult：本次回复所用 model（message 级，落库优先）
+	providerID      string           // 仅 HighEventResult：本次回复所用 provider
+	sessionTokens   SessionTokens    // 仅 HighEventResult：会话累计 tokens（调 GetSession）
+	sessionCost     float64          // 仅 HighEventResult：会话累计 cost
 }
 
 // Getter
@@ -73,6 +78,18 @@ func (e HighEvent) Cost() float64       { return e.cost }
 // Thinking 仅 HighEventResult 携带 turn 完整思考全文（落库优先，回退 SSE 累积）。
 // 其余 kind 返回 ""（增量思考请用 Text() 配合 HighEventThinking/HighEventThinkingDone）。
 func (e HighEvent) Thinking() string { return e.thinking }
+
+// ReasoningTokens 仅 HighEventResult 携带本次 reasoning token 用量（来自 step-finish）。
+func (e HighEvent) ReasoningTokens() int { return e.reasoningTokens }
+
+// ModelID / ProviderID 仅 HighEventResult 携带本次回复所用 model（message 级）。
+// 双源：SSE message.updated 优先，空则 GetMessage 兜底。
+func (e HighEvent) ModelID() string    { return e.modelID }
+func (e HighEvent) ProviderID() string { return e.providerID }
+
+// SessionTokens / SessionCost 仅 HighEventResult 携带会话累计用量（调 GetSession）。
+func (e HighEvent) SessionTokens() SessionTokens { return e.sessionTokens }
+func (e HighEvent) SessionCost() float64         { return e.sessionCost }
 
 // PermissionAsked 仅 kind==HighEventPermissionAsked 时非 nil，其余 kind 返回 nil。
 func (e HighEvent) PermissionAsked() *PermissionAskedData { return e.permission }
@@ -152,13 +169,14 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 			// reason="stop" 是成功终止；其他 reason（如 tool-calls）按 step_finish 报告。
 			// result 字段留空，由 pump 在关闭 chan 前回填累积的 text delta。
 			he := HighEvent{
-				sessionID:    d.SessionID,
-				messageID:    p.MessageID,
-				inputTokens:  int(p.Tokens.Input),
-				outputTokens: int(p.Tokens.Output),
-				cacheRead:    int(p.Tokens.Cache.Read),
-				cacheWrite:   int(p.Tokens.Cache.Write),
-				cost:         p.Cost,
+				sessionID:       d.SessionID,
+				messageID:       p.MessageID,
+				inputTokens:     int(p.Tokens.Input),
+				outputTokens:    int(p.Tokens.Output),
+				reasoningTokens: int(p.Tokens.Reasoning),
+				cacheRead:       int(p.Tokens.Cache.Read),
+				cacheWrite:      int(p.Tokens.Cache.Write),
+				cost:            p.Cost,
 			}
 			if p.Reason == "stop" || p.Reason == "" {
 				he.kind = HighEventResult

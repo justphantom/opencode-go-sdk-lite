@@ -208,13 +208,15 @@ func (m SessionMessage) ReasoningText() string {
 // MessageInfo 是 User/Assistant 消息的公共字段（assistant 专有字段在 user 消息上为零值）。
 // 更多字段（parts 之外的）请按 role 自行反序列化 Parts。
 type MessageInfo struct {
-	ID        string        `json:"id"`
-	SessionID string        `json:"sessionID"`
-	Role      string        `json:"role"`
-	Agent     string        `json:"agent,omitempty"`
-	Finish    string        `json:"finish,omitempty"`
-	Cost      float64       `json:"cost,omitempty"`
-	Tokens    SessionTokens `json:"tokens,omitempty"`
+	ID         string        `json:"id"`
+	SessionID  string        `json:"sessionID"`
+	Role       string        `json:"role"`
+	Agent      string        `json:"agent,omitempty"`
+	Finish     string        `json:"finish,omitempty"`
+	Cost       float64       `json:"cost,omitempty"`
+	Tokens     SessionTokens `json:"tokens,omitempty"`
+	ModelID    string        `json:"modelID,omitempty"`    // assistant 消息所用模型（实测服务端返回）
+	ProviderID string        `json:"providerID,omitempty"` // 对应 provider
 }
 
 // ============ Model / Provider ============

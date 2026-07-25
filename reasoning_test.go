@@ -102,15 +102,16 @@ func TestPump_AccThinkingFromDeltas(t *testing.T) {
 	var lastTodo string
 	var accText strings.Builder
 	var accThinking strings.Builder
+	var resultModel, resultProvider string
 
 	// 1. reasoning 建块（登记 partID）
-	c.processOneEvent(makeReasoningBuildingEvent("prt_r"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
+	c.processOneEvent(makeReasoningBuildingEvent("prt_r"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
 	// 2. 多条 delta
 	for _, d := range []string{"The ", "user ", "asks."} {
-		c.processOneEvent(makeReasoningDeltaEvent("prt_r", d), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
+		c.processOneEvent(makeReasoningDeltaEvent("prt_r", d), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
 	}
 	// 3. 终止事件（step-finish reason=stop → HighEventResult）
-	c.processOneEvent(makeStepFinishEvent(), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
+	c.processOneEvent(makeStepFinishEvent(), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
 
 	close(out)
 	var result HighEvent
@@ -135,12 +136,13 @@ func TestPump_ThinkingDoneOverridesAcc(t *testing.T) {
 	var lastTodo string
 	var accText strings.Builder
 	var accThinking strings.Builder
+	var resultModel, resultProvider string
 
-	c.processOneEvent(makeReasoningBuildingEvent("prt_r"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
-	c.processOneEvent(makeReasoningDeltaEvent("prt_r", "delta-fragment"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
+	c.processOneEvent(makeReasoningBuildingEvent("prt_r"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
+	c.processOneEvent(makeReasoningDeltaEvent("prt_r", "delta-fragment"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
 	// 服务端整合的完整文本（覆盖 delta 累积）
-	c.processOneEvent(makeReasoningDoneEvent("prt_r", "权威完整思考"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
-	c.processOneEvent(makeStepFinishEvent(), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
+	c.processOneEvent(makeReasoningDoneEvent("prt_r", "权威完整思考"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
+	c.processOneEvent(makeStepFinishEvent(), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
 
 	close(out)
 	var result HighEvent
@@ -172,13 +174,14 @@ func TestPump_DrainSrcOnExitPreservesThinking(t *testing.T) {
 	var lastTodo string
 	var accText strings.Builder
 	var accThinking strings.Builder
+	var resultModel, resultProvider string
 
 	// 缓冲：建块 + delta + 终止
 	src <- makeReasoningBuildingEvent("prt_r")
 	src <- makeReasoningDeltaEvent("prt_r", "drain-thinking")
 	src <- makeStepFinishEvent()
 
-	got := c.drainSrcOnExit(src, out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
+	got := c.drainSrcOnExit(src, out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
 	if !got {
 		t.Fatal("drainSrcOnExit 应返回 true（取到终止事件）")
 	}
@@ -204,10 +207,11 @@ func TestHighEventResult_ThinkingDefault(t *testing.T) {
 	var lastTodo string
 	var accText strings.Builder
 	var accThinking strings.Builder
+	var resultModel, resultProvider string
 
 	// 纯 text 事件 + 终止（无 reasoning）
-	c.processOneEvent(makeTextDeltaEvent(), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
-	c.processOneEvent(makeStepFinishEvent(), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
+	c.processOneEvent(makeTextDeltaEvent(), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
+	c.processOneEvent(makeStepFinishEvent(), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
 
 	close(out)
 	var result HighEvent
@@ -233,17 +237,18 @@ func TestPump_MultiStepReasoningConcatenated(t *testing.T) {
 	var lastTodo string
 	var accText strings.Builder
 	var accThinking strings.Builder
+	var resultModel, resultProvider string
 
 	// step 1: reasoning part 1
-	c.processOneEvent(makeReasoningBuildingEvent("prt_r1"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
-	c.processOneEvent(makeReasoningDeltaEvent("prt_r1", "step1-think"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
-	c.processOneEvent(makeReasoningDoneEvent("prt_r1", "step1-think"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
+	c.processOneEvent(makeReasoningBuildingEvent("prt_r1"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
+	c.processOneEvent(makeReasoningDeltaEvent("prt_r1", "step1-think"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
+	c.processOneEvent(makeReasoningDoneEvent("prt_r1", "step1-think"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
 	// step 2: reasoning part 2（不同 partID，相同 messageID）
-	c.processOneEvent(makeReasoningBuildingEvent("prt_r2"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
-	c.processOneEvent(makeReasoningDeltaEvent("prt_r2", "step2-think"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
-	c.processOneEvent(makeReasoningDoneEvent("prt_r2", "step2-think"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
+	c.processOneEvent(makeReasoningBuildingEvent("prt_r2"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
+	c.processOneEvent(makeReasoningDeltaEvent("prt_r2", "step2-think"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
+	c.processOneEvent(makeReasoningDoneEvent("prt_r2", "step2-think"), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
 	// turn 终止
-	c.processOneEvent(makeStepFinishEvent(), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
+	c.processOneEvent(makeStepFinishEvent(), out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking, &resultModel, &resultProvider)
 
 	close(out)
 	var result HighEvent

@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -21,7 +22,7 @@ func (c *Client) effectiveDrainGrace() time.Duration {
 
 // processOneEvent 处理单个 src 事件转 HighEvent 投 out。
 // pump 主循环、drainSrcOnExit、waitForTerminalInGrace 共用——保证三路行为一致
-// （asked 去重、todo 去重、HighEventResult 回填 finalText/finalReasoning）。
+// （asked 去重、todo 去重、HighEventResult 回填 finalText/finalReasoning/finalModel/finalSessionUsage）。
 // 返回 (terminal, outFull)：terminal=true 表示已投出终止事件；outFull=true 表示 out 满放弃。
 func (c *Client) processOneEvent(
 	ev Event,
@@ -32,7 +33,17 @@ func (c *Client) processOneEvent(
 	lastTodo *string,
 	accText *strings.Builder,
 	accThinking *strings.Builder,
+	accModelID, accProviderID *string,
 ) (terminal, outFull bool) {
+	// peek message.updated 抓 model（与 pump 主循环一致）：message.updated 不映射为
+	// HighEvent，但携带本次回复所用 model，缓存供 Result 时用。
+	if ev.Type == EventMessageUpdated {
+		var d MessageUpdatedData
+		if json.Unmarshal(ev.Properties, &d) == nil && d.Info.ModelID != "" {
+			*accModelID = d.Info.ModelID
+			*accProviderID = d.Info.ProviderID
+		}
+	}
 	he, emit, term := mapToHighEvent(ev, &assistantID, parts)
 	if !emit {
 		return false, false
@@ -58,6 +69,14 @@ func (c *Client) processOneEvent(
 	if he.Kind() == HighEventResult {
 		he.thinking = c.finalReasoning(context.Background(), sessionID, assistantID, accThinking.String())
 	}
+	if he.Kind() == HighEventResult {
+		mid, pid := c.finalModel(context.Background(), sessionID, assistantID, *accModelID, *accProviderID)
+		he.modelID = mid
+		he.providerID = pid
+	}
+	if he.Kind() == HighEventResult {
+		he.sessionTokens, he.sessionCost = c.finalSessionUsage(context.Background(), sessionID)
+	}
 	select {
 	case out <- he:
 	default:
@@ -78,6 +97,7 @@ func (c *Client) drainSrcOnExit(
 	lastTodo *string,
 	accText *strings.Builder,
 	accThinking *strings.Builder,
+	accModelID, accProviderID *string,
 ) (gotTerminal bool) {
 	for {
 		select {
@@ -85,7 +105,7 @@ func (c *Client) drainSrcOnExit(
 			if !ok {
 				return
 			}
-			term, _ := c.processOneEvent(ev, out, sessionID, assistantID, parts, asked, lastTodo, accText, accThinking)
+			term, _ := c.processOneEvent(ev, out, sessionID, assistantID, parts, asked, lastTodo, accText, accThinking, accModelID, accProviderID)
 			if term {
 				return true
 			}
@@ -108,6 +128,7 @@ func (c *Client) waitForTerminalInGrace(
 	lastTodo *string,
 	accText *strings.Builder,
 	accThinking *strings.Builder,
+	accModelID, accProviderID *string,
 	grace time.Duration,
 ) (gotTerminal bool) {
 	if grace <= 0 {
@@ -123,7 +144,7 @@ func (c *Client) waitForTerminalInGrace(
 			if !ok {
 				return false
 			}
-			term, _ := c.processOneEvent(ev, out, sessionID, assistantID, parts, asked, lastTodo, accText, accThinking)
+			term, _ := c.processOneEvent(ev, out, sessionID, assistantID, parts, asked, lastTodo, accText, accThinking, accModelID, accProviderID)
 			if term {
 				return true
 			}
