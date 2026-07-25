@@ -44,7 +44,20 @@ var (
 //
 // stream 必须是已启动的 GlobalEventStream；Run 会 Subscribe(sessionID) 后 Unsubscribe。
 // Agent/Model 随本条消息生效（V1 无 Switch 接口）。
+//
+// 等价于 RunWithHandle(...).Events()——如需订阅者 ctx 取消后主动等终止事件，请改用 RunWithHandle。
 func (c *Client) Run(ctx context.Context, stream *GlobalEventStream, opts RunOptions) (<-chan HighEvent, error) {
+	h, err := c.RunWithHandle(ctx, stream, opts)
+	if err != nil {
+		return nil, err
+	}
+	return h.Events(), nil
+}
+
+// RunWithHandle 与 Run 等价，但返回 *RunHandle（额外暴露 WaitTerminal）。
+// bridge / 长链路订阅者建议改用本接口，ctx 取消后用 handle.WaitTerminal 多等一段，
+// 接住飞行中的终止事件（配合 pump 内部 drainSrcOnExit + drainGrace 双层兜底）。
+func (c *Client) RunWithHandle(ctx context.Context, stream *GlobalEventStream, opts RunOptions) (*RunHandle, error) {
 	if stream == nil {
 		return nil, fmt.Errorf("opencode: stream is nil")
 	}
@@ -85,7 +98,7 @@ func (c *Client) Run(ctx context.Context, stream *GlobalEventStream, opts RunOpt
 
 	out := make(chan HighEvent, 16)
 	go c.pump(ctx, stream, sessionID, ack.MessageID, ch, out, resumed)
-	return out, nil
+	return &RunHandle{events: out}, nil
 }
 
 // pump 把原始 Event 流转换为 HighEvent 流。
@@ -95,7 +108,7 @@ func (c *Client) Run(ctx context.Context, stream *GlobalEventStream, opts RunOpt
 func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID, userMessageID string, src <-chan Event, out chan<- HighEvent, resumed bool) {
 	defer close(out)
 	defer stream.Unsubscribe(sessionID)
-	defer recoverPanic("Client.pump")
+	defer recoverPanic(c.logger, "Client.pump")
 
 	// 首事件：HighEventPrompt，携带 user messageID
 	select {
@@ -158,6 +171,12 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 	for {
 		select {
 		case <-ctx.Done():
+			if c.drainSrcOnExit(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText) {
+				return
+			}
+			if c.waitForTerminalInGrace(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, c.effectiveDrainGrace()) {
+				return
+			}
 			c.fireAndForgetAbort(sessionID)
 			out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true}
 			return
@@ -216,6 +235,12 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 
 			select {
 			case <-ctx.Done():
+				if c.drainSrcOnExit(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText) {
+					return
+				}
+				if c.waitForTerminalInGrace(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, c.effectiveDrainGrace()) {
+					return
+				}
 				c.fireAndForgetAbort(sessionID)
 				out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true}
 				return

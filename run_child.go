@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 )
 
@@ -34,6 +35,7 @@ type childTracker struct {
 	out       chan<- HighEvent
 	asked     *askedTracker
 	directory string
+	logger    *slog.Logger
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -45,11 +47,16 @@ type childTracker struct {
 
 func newChildTracker(stream *GlobalEventStream, out chan<- HighEvent, asked *askedTracker, directory string, parent context.Context) *childTracker {
 	ctx, cancel := context.WithCancel(parent)
+	logger := newDefaultLogger()
+	if stream != nil {
+		logger = stream.logger
+	}
 	return &childTracker{
 		stream:    stream,
 		out:       out,
 		asked:     asked,
 		directory: directory,
+		logger:    logger,
 		ctx:       ctx,
 		cancel:    cancel,
 		subs:      make(map[string]struct{}),
@@ -101,7 +108,7 @@ func (t *childTracker) subscribe(sid string) {
 // （text/tool-use/step-*/idle 等）一律丢——子 turn 的文本与状态不属于父 turn 输出。
 func (t *childTracker) forwardAsked(src <-chan Event) {
 	defer t.wg.Done()
-	defer recoverPanic("childTracker.forwardAsked")
+	defer recoverPanic(t.logger, "childTracker.forwardAsked")
 	for {
 		select {
 		case <-t.ctx.Done():

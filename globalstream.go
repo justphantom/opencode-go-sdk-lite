@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -40,10 +41,36 @@ type GlobalEventStream struct {
 	cancelConnHook func()
 
 	heartbeatDone chan struct{}
+
+	logger *slog.Logger
+
+	// 业务事件 watchdog 双轨：心跳 watchdog 监控连接活性（半开 TCP），
+	// 业务 watchdog 监控业务事件流空闲（agent 卡死/服务端不 push）。
+	// 后者不重连——触发 OnIdle 回调由订阅者决策（GET messages / abort / 继续等）。
+	lastBusinessEvent   time.Time
+	lastBusinessEventMu sync.Mutex
+	businessDone        chan struct{}
+	idleTimeout         time.Duration // 0 = 用包级 businessIdleTimeout
+
+	// pendingAsked：dispatch 见 asked 事件登记，见其他业务事件清除。
+	// 等用户回应 permission/question 期间主动挂起，不应触发业务空闲告警。
+	pendingAsked   map[string]struct{}
+	pendingAskedMu sync.Mutex
+
+	// OnIdle 业务事件空闲回调（默认 nil）。空闲超 businessIdleTimeout 触发，
+	// 在锁外执行；pendingAsked 状态跳过。回调 panic 由独立 recover 兜底。
+	OnIdle func(sessionID string, idleSince time.Time)
 }
 
 // heartbeatTimeout 用 var 而非 const，便于测试 shrink（gosec/revive 不要建议改 const）。
 var heartbeatTimeout = 15 * time.Second
+
+// businessIdleProbe / businessIdleTimeout 业务事件 watchdog 参数。
+// var 便于测试 shrink。timeout 默认 5min：故障下限 60min，正常 P99 <2min，留 2.5× 余量。
+var (
+	businessIdleProbe   = 30 * time.Second
+	businessIdleTimeout = 5 * time.Minute
+)
 
 const (
 	reconnectBackoffMin    = 100 * time.Millisecond
@@ -57,17 +84,23 @@ const (
 // 调用方应在第一次 Prompt 前调用，避免丢首帧。Close 即停止后台。
 func (c *Client) NewGlobalEventStream(ctx context.Context, loc *LocationRef) (*GlobalEventStream, error) {
 	s := &GlobalEventStream{
-		c:             c,
-		http:          c.httpClient,
-		loc:           loc,
-		subs:          make(map[string]chan Event),
-		stopCh:        make(chan struct{}),
-		done:          make(chan struct{}),
-		heartbeatDone: make(chan struct{}),
-		lastHeartbeat: time.Now(),
+		c:                 c,
+		http:              c.httpClient,
+		loc:               loc,
+		subs:              make(map[string]chan Event),
+		stopCh:            make(chan struct{}),
+		done:              make(chan struct{}),
+		heartbeatDone:     make(chan struct{}),
+		businessDone:      make(chan struct{}),
+		lastHeartbeat:     time.Now(),
+		lastBusinessEvent: time.Now(),
+		pendingAsked:      make(map[string]struct{}),
+		idleTimeout:       c.businessIdleTimeout,
+		logger:            c.logger,
 	}
 	go s.run(ctx)
 	go s.heartbeatWatchdog()
+	go s.businessWatchdog()
 	return s, nil
 }
 
@@ -109,9 +142,10 @@ func (s *GlobalEventStream) Close() error {
 		close(s.stopCh)
 	}
 	// 主动中断当前连接，让 connect 返回，run 才能感知 stopCh
-	s.cancelConn()
+	s.cancelConn("close")
 	<-s.done
 	<-s.heartbeatDone
+	<-s.businessDone
 
 	s.mu.Lock()
 	for sid, ch := range s.subs {
@@ -125,7 +159,7 @@ func (s *GlobalEventStream) Close() error {
 // run 是后台主循环：连接 / 读流 / 断线重连。
 func (s *GlobalEventStream) run(ctx context.Context) {
 	defer close(s.done)
-	defer recoverPanic("GlobalEventStream.run")
+	defer recoverPanic(s.logger, "GlobalEventStream.run")
 
 	backoff := reconnectBackoffMin
 	for {
@@ -165,6 +199,7 @@ func (s *GlobalEventStream) run(ctx context.Context) {
 // connect 发起一次 /event 连接并阻塞读流。
 // 返回 (failed=true 表示异常退出需重连, shortLived 表示连接存活 <2s 视为 flapping)。
 func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived bool) {
+	s.logger.Debug("connect attempt", "loc", locString(s.loc))
 	connCtx, cancel := context.WithCancel(ctx)
 	s.setConnCancel(cancel)
 	defer s.clearConnCancel()
@@ -180,12 +215,15 @@ func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived boo
 	if err != nil {
 		// ctx 取消属正常退出，不重连
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			s.logger.Info("connect ctx canceled", "err", err)
 			return false, false
 		}
+		s.logger.Info("connect Do failed", "err", err)
 		return true, true
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		s.logger.Warn("connect non-200", "status", resp.StatusCode)
 		drainAndClose(resp.Body)
 		// 4xx（除 429）属于不可恢复错误，但本层不区分——交给上层处理，这里仍重连
 		return true, true
@@ -200,8 +238,9 @@ func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived boo
 		}
 		_, _, data, err := sc.next()
 		if err != nil {
-			drainAndClose(resp.Body)
 			lived := time.Since(start)
+			s.logger.Info("connect read failed", "lived", lived, "short_lived", lived < healthyConnMinDuration)
+			drainAndClose(resp.Body)
 			return true, lived < healthyConnMinDuration
 		}
 		if data == "" {
@@ -209,6 +248,7 @@ func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived boo
 		}
 		ev, derr := decodeEvent("", "", data)
 		if derr != nil {
+			s.logger.Warn("decode event failed", "data_snippet", truncStr(data, 200))
 			s.updateHeartbeat()
 			continue
 		}
@@ -223,16 +263,26 @@ func (s *GlobalEventStream) dispatch(ev Event) {
 	if sid == "" {
 		return // 全局事件（如 server.connected）不路由
 	}
+	// 业务事件流 watchdog：任何 dispatch 看到的事件都说明流在动，刷新空闲计时。
+	// asked 事件登记 pendingAsked（等用户回应是主动挂起）；其他事件清除（说明已答、turn 继续）。
+	s.updateBusinessEvent()
+	if ev.Type == EventPermissionAsked || ev.Type == EventQuestionAsked {
+		s.addAsked(sid)
+	} else {
+		s.clearAsked(sid)
+	}
 	s.mu.Lock()
 	ch, ok := s.subs[sid]
 	s.mu.Unlock()
 	if !ok {
+		s.logger.Debug("dispatch no subscriber", "sid", sid, "type", ev.Type)
 		return
 	}
 	// 非阻塞投递；终止事件必送达
 	if isTerminalEvent(ev) {
 		select {
 		case <-s.stopCh:
+			s.logger.Warn("dispatch terminal dropped, stream stopping", "sid", sid, "type", ev.Type)
 		case ch <- ev:
 		}
 		return
@@ -241,5 +291,22 @@ func (s *GlobalEventStream) dispatch(ev Event) {
 	case ch <- ev:
 	default:
 		// 满则丢非终止事件
+		s.logger.Warn("dispatch dropped, chan full", "sid", sid, "type", ev.Type, "chan_full", true)
 	}
+}
+
+// locString 提取 loc.Directory 用于日志（避免打印整个 struct）。
+func locString(loc *LocationRef) string {
+	if loc == nil {
+		return ""
+	}
+	return loc.Directory
+}
+
+// truncStr 截断字符串到 max 字节，超长加 "..."。
+func truncStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }

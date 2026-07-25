@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Client 是 opencode v1 HTTP API 的薄客户端。
@@ -17,6 +19,12 @@ type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client
 	headers    map[string]string
+	logger     *slog.Logger
+	// businessIdleTimeout 业务事件空闲阈值；0 表示用包级默认（5min）。
+	businessIdleTimeout time.Duration
+	// drainGrace pump ctx 取消后等待飞行中终止事件的宽限；0 表示用包级默认（500ms），
+	// 负值禁用（立即退出走合成 HighEventError 路径）。
+	drainGrace time.Duration
 }
 
 // Option 配置 Client。
@@ -55,6 +63,24 @@ func WithUserAgent(ua string) Option {
 	return func(c *Client) { c.headers["User-Agent"] = ua }
 }
 
+// WithLogger 注入 logger，覆盖 connect/dispatch/watchdog 等内部埋点。
+// 默认 newDefaultLogger()（New 里兜底），零调用方感知。
+func WithLogger(l *slog.Logger) Option {
+	return func(c *Client) { c.logger = l }
+}
+
+// WithBusinessIdleTimeout 设业务事件空闲阈值。0 或不调 = 用包级默认（5min）。
+// 订阅者可按业务特性收紧/放宽（如 CI agent 长任务可放宽，ChatOps 短任务可收紧）。
+func WithBusinessIdleTimeout(d time.Duration) Option {
+	return func(c *Client) { c.businessIdleTimeout = d }
+}
+
+// WithDrainGrace 设 pump ctx 取消后等待飞行中终止事件的宽限时间。
+// 0 或不调 = 用包级默认（500ms）；负值禁用宽限（pump 立即走合成 HighEventError 路径）。
+func WithDrainGrace(d time.Duration) Option {
+	return func(c *Client) { c.drainGrace = d }
+}
+
 // New 创建 Client。baseURL 形如 "http://127.0.0.1:4096"。
 func New(baseURL string, opts ...Option) (*Client, error) {
 	u, err := url.Parse(strings.TrimRight(baseURL, "/"))
@@ -65,6 +91,7 @@ func New(baseURL string, opts ...Option) (*Client, error) {
 		baseURL:    u,
 		httpClient: http.DefaultClient,
 		headers:    map[string]string{"Accept": "application/json"},
+		logger:     newDefaultLogger(),
 	}
 	for _, opt := range opts {
 		opt(c)
