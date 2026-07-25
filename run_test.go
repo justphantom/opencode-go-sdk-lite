@@ -490,3 +490,52 @@ func TestRun_StreamClosedCarriesText(t *testing.T) {
 		t.Errorf("Text() = %q, want %q（兜底错误文本必须落到 text）", got, "stream closed")
 	}
 }
+
+// TestRun_PumpExitsWhenConsumerStuck: H1 回归——consumer 不读 out chan 时 cancel ctx，
+// pump 必须在合理时间内退出（chan 被 defer close），不泄漏 goroutine。
+// 修复前：pump 三处 ctx.Done 路径的裸 `out <- HighEventError` 会因 out 满而阻塞，
+// defer chain 不执行 → goroutine 永久泄漏。
+func TestRun_PumpExitsWhenConsumerStuck(t *testing.T) {
+	// frames 推 30 条 text delta，远超 out cap=16，确保 ctx 取消时 out 已积压。
+	frames := func(sid string) string {
+		var b strings.Builder
+		b.WriteString(sseStepStarted(sid, assistantMsgID, 0))
+		for i := 0; i < 30; i++ {
+			b.WriteString(sseTextDelta(sid, assistantMsgID, fmt.Sprintf("delta-%d ", i), int64(i+1)))
+		}
+		return b.String()
+	}
+	srv, _ := setupRunServer(t, "ses_stuck", frames)
+	defer srv.Close()
+
+	c, _ := New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, _ := c.NewGlobalEventStream(ctx, nil)
+	defer func() { _ = stream.Close() }()
+
+	out, err := c.Run(ctx, stream, RunOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// 等 pump 把 out 灌到 cap=16（不用精确等待，sleep 500ms 足够 mock server 推完 30 帧到 src，pump 转发到 out 满后阻塞）。
+	time.Sleep(500 * time.Millisecond)
+
+	// consumer 全程不读 out，直接 cancel。
+	cancel()
+
+	// pump 必须在 3s 内退出 → defer close(out) → for-range 退出。
+	// 修复前这里会永久阻塞（goroutine 泄漏）。
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case _, ok := <-out:
+			if !ok {
+				return // chan closed，pump 已退出
+			}
+		case <-deadline:
+			t.Fatal("pump 未在 3s 内退出（H1 goroutine 泄漏回归）")
+		}
+	}
+}

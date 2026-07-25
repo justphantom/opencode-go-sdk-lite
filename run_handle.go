@@ -12,6 +12,16 @@ import (
 // 0 = 关闭宽限（立即退出）。var 便于测试 shrink；WithDrainGrace 注入到 Client.drainGrace 覆盖。
 var drainGrace = 500 * time.Millisecond
 
+// trySendError 非阻塞发送 Error 事件。pump 退出路径（ctx 取消 / stream 关闭）上
+// consumer 可能已停止读取，裸 send 阻塞会让 goroutine 永久泄漏（H1）——满则丢弃，
+// consumer 通过 chan close（pump defer close(out)）自然退出 for-range 感知终止。
+func trySendError(out chan<- HighEvent, he HighEvent) {
+	select {
+	case out <- he:
+	default:
+	}
+}
+
 // effectiveDrainGrace 返回 Client 配置的 drainGrace，否则回退包级默认。
 func (c *Client) effectiveDrainGrace() time.Duration {
 	if c.drainGrace != 0 {

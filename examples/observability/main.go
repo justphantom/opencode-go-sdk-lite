@@ -28,14 +28,14 @@ import (
 
 func main() {
 	var (
-		baseURL    = flag.String("url", "http://127.0.0.1:6096", "opencode serve 地址")
-		token      = flag.String("token", "", "Bearer token")
-		dir        = flag.String("dir", ".", "工作区目录")
-		prompt     = flag.String("prompt", "解释这个项目的目录结构", "提问")
-		modelID    = flag.String("model", "", "模型 id（空则用服务端默认）")
-		idleAfter  = flag.Duration("idle-after", 5*time.Minute, "业务空闲阈值（超过触发 OnIdle）")
+		baseURL     = flag.String("url", "http://127.0.0.1:6096", "opencode serve 地址")
+		token       = flag.String("token", "", "Bearer token")
+		dir         = flag.String("dir", ".", "工作区目录")
+		prompt      = flag.String("prompt", "解释这个项目的目录结构", "提问")
+		modelID     = flag.String("model", "", "模型 id（空则用服务端默认）")
+		idleAfter   = flag.Duration("idle-after", 5*time.Minute, "业务空闲阈值（超过触发 OnIdle）")
 		cancelAfter = flag.Duration("cancel-after", 0, ">0 时模拟订阅者在 N 后取消 ctx（演示 drain）")
-		timeout    = flag.Duration("timeout", 5*time.Minute, "整体超时")
+		timeout     = flag.Duration("timeout", 5*time.Minute, "整体超时")
 	)
 	flag.Parse()
 

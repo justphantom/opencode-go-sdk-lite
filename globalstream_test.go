@@ -283,3 +283,40 @@ func TestGlobalStream_ReconnectAfterDrop(t *testing.T) {
 		t.Errorf("got = %v, want [first second]", got)
 	}
 }
+
+// TestGlobalStream_DispatchSafeOnClosedChan: C1 回归——Subscribe 替换订阅者时
+// 旧的订阅 chan 被 close，dispatch 持有旧引用写入会触发 panic。
+// 修复前：panic 沿调用栈传到 run 的 defer recoverPanic，run 整个退出不再重连，
+// close(done) 仍执行 → Close() 调用方无感，整条流静默死亡。
+// 修复后：dispatch 自身 defer recoverPanic 兜底，事件被丢弃但流仍活。
+func TestGlobalStream_DispatchSafeOnClosedChan(t *testing.T) {
+	c, _ := New("http://127.0.0.1:1")
+	s := &GlobalEventStream{
+		c:                 c,
+		subs:              make(map[string]chan Event),
+		stopCh:            make(chan struct{}),
+		pendingAsked:      make(map[string]struct{}),
+		logger:            newDefaultLogger(),
+		lastHeartbeat:     time.Now(),
+		lastBusinessEvent: time.Now(),
+	}
+
+	// 直接注入一个已 close 的 chan 到 subs（绕过 Subscribe 的 <-chan 返回类型），
+	// 模拟 Subscribe(sid) 替换时 close 旧 chan 的窗口期。
+	ch := make(chan Event, 1)
+	s.subs["ses_c1"] = ch
+	close(ch)
+
+	// dispatch 一个终止事件 + 一个非终止事件，都写到已 close chan。
+	// 修复前：写已 close chan panic，测试崩溃（panic 不被捕获传到 t）。
+	// 修复后：dispatch defer recover，函数正常返回。
+	s.dispatch(Event{Type: EventSessionIdle, Properties: []byte(`{"sessionID":"ses_c1"}`)})
+	s.dispatch(Event{Type: EventMessagePartDelta, Properties: []byte(`{"sessionID":"ses_c1","delta":"x"}`)})
+
+	// 验证 stopCh 未关闭（run 没被 panic 杀死）。
+	select {
+	case <-s.stopCh:
+		t.Fatal("stopCh 已关闭：dispatch panic 让 run 退出（C1 回归）")
+	default:
+	}
+}

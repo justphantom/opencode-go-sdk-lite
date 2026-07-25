@@ -258,7 +258,11 @@ func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived boo
 }
 
 // dispatch 把事件路由到对应 sessionID 的订阅 chan。
+// 局部 recover 防御写已 close chan 的 panic（Subscribe/Unsubscribe 替换订阅者时
+// 与本函数存在 race）——单次事件 panic 不再传播到 connect/run 让整条流静默死亡，
+// 事件本身被丢弃（消费方已切换订阅，丢弃可接受）。
 func (s *GlobalEventStream) dispatch(ev Event) {
+	defer recoverPanic(s.logger, "GlobalEventStream.dispatch")
 	sid := extractSessionID(ev)
 	if sid == "" {
 		return // 全局事件（如 server.connected）不路由

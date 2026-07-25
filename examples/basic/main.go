@@ -88,8 +88,8 @@ func main() {
 
 	// 6. 消费 HighEvent 直到 chan close（Run 保证 close 前必发 result/error）。
 	var (
-		sessionID    string
-		accThinking  strings.Builder // v0.2.1：累积思考增量（也可走 Result.Thinking() 拿权威全文）
+		sessionID   string
+		accThinking strings.Builder // v0.2.1：累积思考增量（也可走 Result.Thinking() 拿权威全文）
 	)
 	for ev := range events {
 		switch ev.Kind() {

@@ -161,14 +161,19 @@ func (c *Client) Health(ctx context.Context) error {
 }
 
 func (c *Client) newRequest(ctx context.Context, method, path string, query url.Values, body io.Reader) (*http.Request, error) {
-	rel, err := url.Parse(path)
-	if err != nil {
-		return nil, fmt.Errorf("opencode: invalid path: %w", err)
+	// 拼 baseURL.Path + path。不用 ResolveReference——它会用绝对路径整段覆盖
+	// baseURL.Path，丢失反代前缀（如 baseURL=http://host/v1 + path=/session/x
+	// 会变成 http://host/session/x）。这里手动拼接保留前缀。
+	u := *c.baseURL
+	switch u.Path {
+	case "", "/":
+		u.Path = path
+	default:
+		u.Path = strings.TrimRight(u.Path, "/") + "/" + strings.TrimLeft(path, "/")
 	}
 	if len(query) > 0 {
-		rel.RawQuery = query.Encode()
+		u.RawQuery = query.Encode()
 	}
-	u := c.baseURL.ResolveReference(rel)
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return nil, err

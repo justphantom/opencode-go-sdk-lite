@@ -115,7 +115,7 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 	select {
 	case <-ctx.Done():
 		c.fireAndForgetAbort(sessionID)
-		out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: userMessageID, isError: true}
+		trySendError(out, HighEvent{kind: HighEventError, sessionID: sessionID, messageID: userMessageID, isError: true})
 		return
 	case out <- HighEvent{kind: HighEventPrompt, sessionID: sessionID, messageID: userMessageID}:
 	}
@@ -181,7 +181,7 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 				return
 			}
 			c.fireAndForgetAbort(sessionID)
-			out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true}
+			trySendError(out, HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true})
 			return
 		case <-pollTicker.C:
 			poll()
@@ -195,7 +195,7 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			if !ok {
 				// 流被关闭（stream.Close 或 Unsubscribe 由别处触发）；兜底终止。
 				// 文本走 text 字段，与 Error 事件约定一致。
-				out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true, text: "stream closed"}
+				trySendError(out, HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true, text: "stream closed"})
 				return
 			}
 			// peek message.updated 抓 model 信息（HighEventResult.ModelID 主源）。
@@ -279,7 +279,7 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 					return
 				}
 				c.fireAndForgetAbort(sessionID)
-				out <- HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true}
+				trySendError(out, HighEvent{kind: HighEventError, sessionID: sessionID, messageID: assistantID, isError: true})
 				return
 			case out <- he:
 			}
