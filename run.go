@@ -327,10 +327,9 @@ func (c *Client) pollAsked(ctx context.Context, sids []string, asked *askedTrack
 			if _, ok := want[p.SessionID]; !ok {
 				continue
 			}
-			d := PermissionAskedData{
-				ID: p.ID, SessionID: p.SessionID, Permission: p.Permission,
-				Patterns: p.Patterns, Metadata: p.Metadata, Always: p.Always, Tool: p.Tool,
-			}
+			// PermissionAskedData 与 PermissionRequest 字段完全同构（types.go:531 注释），
+			// 类型转换比 struct literal 更安全：未来加字段时若两侧不同步会编译失败。
+			d := PermissionAskedData(p)
 			emit(p.ID, HighEvent{kind: HighEventPermissionAsked, sessionID: p.SessionID, permission: &d})
 		}
 	}
@@ -339,9 +338,7 @@ func (c *Client) pollAsked(ctx context.Context, sids []string, asked *askedTrack
 			if _, ok := want[q.SessionID]; !ok {
 				continue
 			}
-			d := QuestionAskedData{
-				ID: q.ID, SessionID: q.SessionID, Questions: q.Questions, Tool: q.Tool,
-			}
+			d := QuestionAskedData(q)
 			emit(q.ID, HighEvent{kind: HighEventQuestionAsked, sessionID: q.SessionID, question: &d})
 		}
 	}

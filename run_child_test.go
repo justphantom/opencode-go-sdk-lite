@@ -31,14 +31,6 @@ func sseToolUse(sid, mid, toolName string, seq int64) string {
 	)
 }
 
-// childSessionJSON 构造 ListChildren 返回的单个 SessionInfo JSON 片段。
-func childSessionJSON(id, parentID string) string {
-	return fmt.Sprintf(
-		`{"id":%q,"parentID":%q,"projectID":"global","directory":"/tmp","title":"sub","agent":"explore","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1}}`,
-		id, parentID,
-	)
-}
-
 // childrenServer 构造支持子 session 发现 + asked 补偿轮询的 mock 服务。
 // children 返回 sid 的直接子 session 列表（按被查询的 sessionID 区分，支持嵌套）。
 // permPending/qPending 动态控制 GET /permission、/question 的返回。
