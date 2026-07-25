@@ -35,12 +35,13 @@ func TestPump_DrainSrcOnExitRecoversTerminal(t *testing.T) {
 	asked := &askedTracker{seen: make(map[string]bool)}
 	var lastTodo string
 	var accText strings.Builder
+	var accThinking strings.Builder
 
 	// 缓冲一个非终止 + 一个终止事件
 	src <- makeTextDeltaEvent()
 	src <- makeStepFinishEvent()
 
-	got := c.drainSrcOnExit(src, out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText)
+	got := c.drainSrcOnExit(src, out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
 	if !got {
 		t.Fatal("drainSrcOnExit 应返回 true（取到终止事件）")
 	}
@@ -71,8 +72,9 @@ func TestPump_DrainSrcOnExitEmptySrc(t *testing.T) {
 	asked := &askedTracker{seen: make(map[string]bool)}
 	var lastTodo string
 	var accText strings.Builder
+	var accThinking strings.Builder
 
-	got := c.drainSrcOnExit(src, out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText)
+	got := c.drainSrcOnExit(src, out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
 	if got {
 		t.Fatal("空 src 时 drainSrcOnExit 应返回 false")
 	}
@@ -90,6 +92,7 @@ func TestPump_DrainSrcOnExitOutFull(t *testing.T) {
 	asked := &askedTracker{seen: make(map[string]bool)}
 	var lastTodo string
 	var accText strings.Builder
+	var accThinking strings.Builder
 
 	// 先投一个事件占满 out
 	src <- makeTextDeltaEvent()
@@ -97,7 +100,7 @@ func TestPump_DrainSrcOnExitOutFull(t *testing.T) {
 	src <- makeStepFinishEvent() // 第三个终止事件也投不出去
 
 	start := time.Now()
-	got := c.drainSrcOnExit(src, out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText)
+	got := c.drainSrcOnExit(src, out, "ses_test", "msg_a", parts, asked, &lastTodo, &accText, &accThinking)
 	elapsed := time.Since(start)
 	if got {
 		t.Fatal("out 满时应返回 false")

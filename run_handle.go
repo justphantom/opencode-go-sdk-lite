@@ -21,7 +21,7 @@ func (c *Client) effectiveDrainGrace() time.Duration {
 
 // processOneEvent 处理单个 src 事件转 HighEvent 投 out。
 // pump 主循环、drainSrcOnExit、waitForTerminalInGrace 共用——保证三路行为一致
-// （asked 去重、todo 去重、HighEventResult 回填 finalText）。
+// （asked 去重、todo 去重、HighEventResult 回填 finalText/finalReasoning）。
 // 返回 (terminal, outFull)：terminal=true 表示已投出终止事件；outFull=true 表示 out 满放弃。
 func (c *Client) processOneEvent(
 	ev Event,
@@ -31,6 +31,7 @@ func (c *Client) processOneEvent(
 	asked *askedTracker,
 	lastTodo *string,
 	accText *strings.Builder,
+	accThinking *strings.Builder,
 ) (terminal, outFull bool) {
 	he, emit, term := mapToHighEvent(ev, &assistantID, parts)
 	if !emit {
@@ -42,8 +43,20 @@ func (c *Client) processOneEvent(
 	if !registerTodo(&he, lastTodo) {
 		return false, false
 	}
+	// 累积 + 终止帧覆盖（与 pump 主循环一致）
+	if he.Kind() == HighEventText {
+		accText.WriteString(he.Text())
+	} else if he.Kind() == HighEventThinking {
+		accThinking.WriteString(he.Text())
+	} else if he.Kind() == HighEventThinkingDone {
+		accThinking.Reset()
+		accThinking.WriteString(he.Text())
+	}
 	if he.Kind() == HighEventResult && he.result == "" {
 		he.result = c.finalText(context.Background(), sessionID, assistantID, accText.String())
+	}
+	if he.Kind() == HighEventResult {
+		he.thinking = c.finalReasoning(context.Background(), sessionID, assistantID, accThinking.String())
 	}
 	select {
 	case out <- he:
@@ -64,6 +77,7 @@ func (c *Client) drainSrcOnExit(
 	asked *askedTracker,
 	lastTodo *string,
 	accText *strings.Builder,
+	accThinking *strings.Builder,
 ) (gotTerminal bool) {
 	for {
 		select {
@@ -71,7 +85,7 @@ func (c *Client) drainSrcOnExit(
 			if !ok {
 				return
 			}
-			term, _ := c.processOneEvent(ev, out, sessionID, assistantID, parts, asked, lastTodo, accText)
+			term, _ := c.processOneEvent(ev, out, sessionID, assistantID, parts, asked, lastTodo, accText, accThinking)
 			if term {
 				return true
 			}
@@ -93,6 +107,7 @@ func (c *Client) waitForTerminalInGrace(
 	asked *askedTracker,
 	lastTodo *string,
 	accText *strings.Builder,
+	accThinking *strings.Builder,
 	grace time.Duration,
 ) (gotTerminal bool) {
 	if grace <= 0 {
@@ -108,7 +123,7 @@ func (c *Client) waitForTerminalInGrace(
 			if !ok {
 				return false
 			}
-			term, _ := c.processOneEvent(ev, out, sessionID, assistantID, parts, asked, lastTodo, accText)
+			term, _ := c.processOneEvent(ev, out, sessionID, assistantID, parts, asked, lastTodo, accText, accThinking)
 			if term {
 				return true
 			}

@@ -121,6 +121,7 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 
 	var assistantID string
 	var accText strings.Builder
+	var accThinking strings.Builder // 思考增量累积，HighEventResult.Thinking() 的回填源（对称 accText）
 	parts := partTracker{}
 
 	// askedTracker 跨主 src 与子 session 转发去重 asked（按 requestID 全局唯一）。
@@ -171,10 +172,10 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 	for {
 		select {
 		case <-ctx.Done():
-			if c.drainSrcOnExit(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText) {
+			if c.drainSrcOnExit(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking) {
 				return
 			}
-			if c.waitForTerminalInGrace(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, c.effectiveDrainGrace()) {
+			if c.waitForTerminalInGrace(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking, c.effectiveDrainGrace()) {
 				return
 			}
 			c.fireAndForgetAbort(sessionID)
@@ -226,19 +227,31 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 			if he.Kind() == HighEventText {
 				accText.WriteString(he.Text())
 			}
+			// 累积思考增量；HighEventThinkingDone 携带服务端整合的完整文本，覆盖累积（权威）。
+			if he.Kind() == HighEventThinking {
+				accThinking.WriteString(he.Text())
+			} else if he.Kind() == HighEventThinkingDone {
+				accThinking.Reset()
+				accThinking.WriteString(he.Text())
+			}
 			// HighEventResult 的 result 字段由 mapToHighEvent 留空（finish 不是
 			// 输出文本）。优先取服务端落库文本（GET message 的 FinalText，
 			// 免疫 SSE 丢帧）；取不到/为空则回退累积的 text delta。
 			if he.Kind() == HighEventResult && he.result == "" {
 				he.result = c.finalText(ctx, sessionID, assistantID, accText.String())
 			}
+			// HighEventResult 同步回填 thinking：优先服务端落库（ReasoningText 按
+			// "\n" 拼全部 reasoning part），失败回退累积的 thinking delta。
+			if he.Kind() == HighEventResult {
+				he.thinking = c.finalReasoning(ctx, sessionID, assistantID, accThinking.String())
+			}
 
 			select {
 			case <-ctx.Done():
-				if c.drainSrcOnExit(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText) {
+				if c.drainSrcOnExit(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking) {
 					return
 				}
-				if c.waitForTerminalInGrace(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, c.effectiveDrainGrace()) {
+				if c.waitForTerminalInGrace(src, out, sessionID, assistantID, parts, asked, &lastTodo, &accText, &accThinking, c.effectiveDrainGrace()) {
 					return
 				}
 				c.fireAndForgetAbort(sessionID)
@@ -258,6 +271,19 @@ func (c *Client) finalText(ctx context.Context, sessionID, assistantID, accumula
 	if assistantID != "" {
 		if m, err := c.GetMessage(ctx, sessionID, assistantID); err == nil {
 			if t := m.FinalText(); t != "" {
+				return t
+			}
+		}
+	}
+	return accumulated
+}
+
+// finalReasoning 返回 turn 的完整思考：优先服务端落库（ReasoningText 按 "\n" 拼
+// 全部 reasoning part），失败回退 SSE 累积。对称 finalText 的落库优先策略。
+func (c *Client) finalReasoning(ctx context.Context, sessionID, assistantID, accumulated string) string {
+	if assistantID != "" {
+		if m, err := c.GetMessage(ctx, sessionID, assistantID); err == nil {
+			if t := m.ReasoningText(); t != "" {
 				return t
 			}
 		}

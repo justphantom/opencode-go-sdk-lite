@@ -22,6 +22,11 @@ const (
 	HighEventQuestionAsked   HighEventKind = "question_asked"
 
 	HighEventTodoUpdated HighEventKind = "todo_updated" // 会话级 todo 全量列表更新
+
+	// HighEventThinkingDone 思考 part 终止帧：part.updated{type=reasoning text!=""}。
+	// 携带服务端整合后的完整文本，调用方可据此覆盖累积值（权威）。
+	// 非终止（turn 继续）；HighEventResult.Thinking() 也回填累积的思考全文。
+	HighEventThinkingDone HighEventKind = "thinking_done"
 )
 
 // HighEvent 是 Run 对外暴露的高层事件。字段非导出，用 Getter 访问，
@@ -45,6 +50,7 @@ type HighEvent struct {
 	permission   *PermissionAskedData
 	question     *QuestionAskedData
 	todo         *TodoUpdatedData // 仅 kind==HighEventTodoUpdated 非 nil
+	thinking     string           // 仅 HighEventResult 携带：turn 完整思考全文（多 step 拼接，落库优先）
 }
 
 // Getter
@@ -63,6 +69,10 @@ func (e HighEvent) OutputTokens() int   { return e.outputTokens }
 func (e HighEvent) CacheRead() int      { return e.cacheRead }
 func (e HighEvent) CacheWrite() int     { return e.cacheWrite }
 func (e HighEvent) Cost() float64       { return e.cost }
+
+// Thinking 仅 HighEventResult 携带 turn 完整思考全文（落库优先，回退 SSE 累积）。
+// 其余 kind 返回 ""（增量思考请用 Text() 配合 HighEventThinking/HighEventThinkingDone）。
+func (e HighEvent) Thinking() string { return e.thinking }
 
 // PermissionAsked 仅 kind==HighEventPermissionAsked 时非 nil，其余 kind 返回 nil。
 func (e HighEvent) PermissionAsked() *PermissionAskedData { return e.permission }
@@ -124,6 +134,19 @@ func mapToHighEvent(ev Event, assistantID *string, parts partTracker) (HighEvent
 			// 抢锁会把后续 assistant delta 全部过滤掉（实测踩坑）。
 			followAssistantID(assistantID, p.MessageID)
 			return HighEvent{kind: HighEventStepStart, sessionID: d.SessionID, messageID: p.MessageID}, true, false
+		case PartTypeReasoning:
+			// 建块帧（text=""）：仅登记 partID→reasoning（已在 :118 完成），事件本身丢弃。
+			// 终止帧（text!=""）：投 HighEventThinkingDone，携带服务端整合的完整文本（权威），
+			// 调用方/累积器据此覆盖 delta 累积值，免疫丢帧/乱序。
+			if p.Text == "" {
+				return HighEvent{}, false, false
+			}
+			return HighEvent{
+				kind:      HighEventThinkingDone,
+				sessionID: d.SessionID,
+				messageID: p.MessageID,
+				text:      p.Text,
+			}, true, false
 		case PartTypeStepFinish:
 			followAssistantID(assistantID, p.MessageID)
 			// reason="stop" 是成功终止；其他 reason（如 tool-calls）按 step_finish 报告。
