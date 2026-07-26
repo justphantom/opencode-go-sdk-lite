@@ -14,12 +14,30 @@ type askedTracker struct {
 	seen map[string]bool
 }
 
-// register 登记 asked 的 requestID；已登记返回 false（应丢弃）。
-// 复用包级 registerAsked 的 ID 提取逻辑，单一数据源。
+// register 登记并去重 asked 事件（按 requestID 全局唯一）。
+// 跨父子 session 共享一条 GlobalEventStream，asked 可能从 SSE 与 REST 轮询双路、
+// 从父 sid 与子 sid 多来源到达，必须去重避免重复投递给消费方。
+// 返回 false 表示已见过应丢弃。
 func (a *askedTracker) register(he *HighEvent) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return registerAsked(he, a.seen)
+	switch he.kind {
+	case HighEventPermissionAsked:
+		if he.permission != nil {
+			if a.seen[he.permission.ID] {
+				return false
+			}
+			a.seen[he.permission.ID] = true
+		}
+	case HighEventQuestionAsked:
+		if he.question != nil {
+			if a.seen[he.question.ID] {
+				return false
+			}
+			a.seen[he.question.ID] = true
+		}
+	}
+	return true
 }
 
 // childTracker 维护 subagent 子 session 的订阅与 forward goroutine 生命周期。

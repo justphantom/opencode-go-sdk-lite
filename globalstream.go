@@ -199,7 +199,12 @@ func (s *GlobalEventStream) run(ctx context.Context) {
 // connect 发起一次 /event 连接并阻塞读流。
 // 返回 (failed=true 表示异常退出需重连, shortLived 表示连接存活 <2s 视为 flapping)。
 func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived bool) {
-	s.logger.Debug("connect attempt", "loc", locString(s.loc))
+	// loc 用于日志，提取 directory 避免 printing 整个 struct
+	locDir := ""
+	if s.loc != nil {
+		locDir = s.loc.Directory
+	}
+	s.logger.Debug("connect attempt", "loc", locDir)
 	connCtx, cancel := context.WithCancel(ctx)
 	s.setConnCancel(cancel)
 	defer s.clearConnCancel()
@@ -248,7 +253,12 @@ func (s *GlobalEventStream) connect(ctx context.Context) (failed, shortLived boo
 		}
 		ev, derr := decodeEvent("", "", data)
 		if derr != nil {
-			s.logger.Warn("decode event failed", "data_snippet", truncStr(data, 200))
+			snippet := data
+			const max = 200
+			if len(snippet) > max {
+				snippet = snippet[:max] + "..."
+			}
+			s.logger.Warn("decode event failed", "data_snippet", snippet)
 			s.updateHeartbeat()
 			continue
 		}
@@ -297,20 +307,4 @@ func (s *GlobalEventStream) dispatch(ev Event) {
 		// 满则丢非终止事件
 		s.logger.Warn("dispatch dropped, chan full", "sid", sid, "type", ev.Type, "chan_full", true)
 	}
-}
-
-// locString 提取 loc.Directory 用于日志（避免打印整个 struct）。
-func locString(loc *LocationRef) string {
-	if loc == nil {
-		return ""
-	}
-	return loc.Directory
-}
-
-// truncStr 截断字符串到 max 字节，超长加 "..."。
-func truncStr(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
 }

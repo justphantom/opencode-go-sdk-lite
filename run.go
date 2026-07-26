@@ -246,27 +246,17 @@ func (c *Client) pump(ctx context.Context, stream *GlobalEventStream, sessionID,
 				accThinking.Reset()
 				accThinking.WriteString(he.Text())
 			}
-			// HighEventResult 的 result 字段由 mapToHighEvent 留空（finish 不是
-			// 输出文本）。优先取服务端落库文本（GET message 的 FinalText，
-			// 免疫 SSE 丢帧）；取不到/为空则回退累积的 text delta。
-			if he.Kind() == HighEventResult && he.result == "" {
-				he.result = c.finalText(ctx, sessionID, assistantID, accText.String())
-			}
-			// HighEventResult 同步回填 thinking：优先服务端落库（ReasoningText 按
-			// "\n" 拼全部 reasoning part），失败回退累积的 thinking delta。
+			// HighEventResult 回填完整 turn 报告：result / thinking / model / session usage。
+			// result 优先服务端落库（FinalText，免疫 SSE 丢帧），失败回退累积 text delta。
+			// thinking 同样优先落库（ReasoningText 按 "\n" 拼全部 reasoning part），失败回退累积。
+			// model 双源：SSE message.updated 抓到的优先，空则 GetMessage 兜底。
+			// session usage 调 GetSession 拿累计 tokens/cost（每次 turn 结束 1 次 RPC）。
 			if he.Kind() == HighEventResult {
+				if he.result == "" {
+					he.result = c.finalText(ctx, sessionID, assistantID, accText.String())
+				}
 				he.thinking = c.finalReasoning(ctx, sessionID, assistantID, accThinking.String())
-			}
-			// HighEventResult 回填 model：SSE message.updated 抓到的优先（resultModel），
-			// 空则调 GetMessage 兜底（落库 info.modelID）。双源策略对齐 finalText/finalReasoning。
-			if he.Kind() == HighEventResult {
-				mid, pid := c.finalModel(ctx, sessionID, assistantID, resultModel, resultProvider)
-				he.modelID = mid
-				he.providerID = pid
-			}
-			// HighEventResult 回填会话累计用量：调 GetSession 拿 SessionInfo.Tokens/Cost。
-			// 失败返零值（调用方可自行 GetSession 兜底）。每次 turn 结束 1 次 RPC。
-			if he.Kind() == HighEventResult {
+				he.modelID, he.providerID = c.finalModel(ctx, sessionID, assistantID, resultModel, resultProvider)
 				he.sessionTokens, he.sessionCost = c.finalSessionUsage(ctx, sessionID)
 			}
 
@@ -393,27 +383,6 @@ func (c *Client) pollAsked(ctx context.Context, sids []string, asked *askedTrack
 			emit(q.ID, HighEvent{kind: HighEventQuestionAsked, sessionID: q.SessionID, question: &d})
 		}
 	}
-}
-
-// registerAsked 登记并去重 SSE 来源的 asked 事件。返回 false 表示已见过应丢弃。
-func registerAsked(he *HighEvent, seen map[string]bool) bool {
-	switch he.kind {
-	case HighEventPermissionAsked:
-		if he.permission != nil {
-			if seen[he.permission.ID] {
-				return false
-			}
-			seen[he.permission.ID] = true
-		}
-	case HighEventQuestionAsked:
-		if he.question != nil {
-			if seen[he.question.ID] {
-				return false
-			}
-			seen[he.question.ID] = true
-		}
-	}
-	return true
 }
 
 // armTimer 安全重置 timer：先 Stop 并排空已触发的值，再 Reset，规避 time.Reset 的重入风险。

@@ -3,22 +3,17 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"runtime/debug"
 	"time"
 )
 
-// discardHandler 丢弃所有日志。作为 logger 的零依赖兜底（Go 1.22 无 slog.DiscardHandler）。
-type discardHandler struct{}
-
-func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }
-func (discardHandler) Handle(context.Context, slog.Record) error { return nil }
-func (discardHandler) WithAttrs([]slog.Attr) slog.Handler        { return discardHandler{} }
-func (discardHandler) WithGroup(string) slog.Handler             { return discardHandler{} }
-
-// newDefaultLogger 返回丢弃所有日志的 logger。WithLogger 未注入时使用。
+// newDefaultLogger 返回丢弃所有日志的 logger（WithLogger 未注入时使用）。
+// 用 slog.NewTextHandler(io.Discard, nil) 而非自实现 discardHandler——标准库
+// slog.Handler 接口 4 方法可省，调用频率低时 TextHandler 的格式化开销可忽略。
 func newDefaultLogger() *slog.Logger {
-	return slog.New(discardHandler{})
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 // heartbeatWatchdog 独立 goroutine，超时无帧则强制重连。
